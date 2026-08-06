@@ -80,6 +80,29 @@ describe('ensureDeepseekSettings', () => {
     expect(writeBack).toBeNull()
   })
 
+  it('migrates a legacy single-endpoint file (stored={apiKey, model, baseUrl}) to deepseek and seeds custom from the legacy endpoint', () => {
+    const stored = {
+      apiKey: 'legacy-key',
+      model: 'legacy-model',
+      baseUrl: 'https://legacy.example.com/v1',
+    }
+    const defaults = defaultAiSettings()
+    const { writeBack, settings } = ensureDeepseekSettings(stored as any, defaults, creds)
+    // seed branch forces deepseek with creds
+    expect(settings.provider).toBe('deepseek')
+    expect(settings.providers.deepseek).toEqual({ apiKey: 'sk-test', model: 'deepseek-v4-flash' })
+    // legacy single-endpoint fields migrate into the custom slot (resolveAiSettings)
+    expect(settings.providers.custom).toEqual({
+      apiKey: 'legacy-key',
+      model: 'legacy-model',
+      baseUrl: 'https://legacy.example.com/v1',
+    })
+    expect(writeBack).not.toBeNull()
+    expect(writeBack).toBe(settings)
+    // defaults not polluted by resolveAiSettings' custom-migration mutate
+    expect(defaults.providers.custom).toEqual({ apiKey: '', model: '', baseUrl: '' })
+  })
+
   it('does not mutate the caller-provided defaults object', () => {
     const defaults = defaultAiSettings()
     const defaultsSnapshot = {

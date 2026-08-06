@@ -59,6 +59,14 @@ export function ensureDeepseekSettings(
   // mutates `defaults.providers.custom` and returns `defaults` itself in the
   // `!stored.providers` branch (providers.ts:120-128). Clone `defaults` so the
   // caller's object is never polluted regardless of which branch runs.
+  //
+  // Shallow copy of the providers map is sufficient here because every mutate
+  // below is a map-key assignment to a brand-new object
+  // (`defaults.providers.custom = {...}` in resolveAiSettings,
+  // `s.providers.deepseek = {...}` in forceDeepseek); no existing provider
+  // object's inner fields are mutated, so the clone's map isolates the caller.
+  // If a future change mutates an existing provider's fields (e.g.
+  // `resolved.providers.anthropic.apiKey = ...`), switch to a deep copy.
   const defaultsClone: AiSettings = {
     provider: defaults.provider,
     providers: { ...defaults.providers },
