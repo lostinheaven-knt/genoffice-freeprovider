@@ -13,10 +13,18 @@ export interface DeepseekCredentials {
  * Pure credential resolver. Precedence: env -> configObj -> defaults. Does no
  * file I/O; the caller passes a subset of `process.env` and the parsed
  * `env_config.json` object.
+ *
+ * TODO(design-gap): technical-design §4 Task C typed the params as
+ * `{ KEY?: string }`, but the sheets app workspace enables
+ * `exactOptionalPropertyTypes`, under which `{ KEY: string | undefined }` (the
+ * shape produced by forwarding `process.env.X`) is not assignable to
+ * `{ KEY?: string }`. The params therefore explicitly allow `string | undefined`
+ * so callers can forward `process.env` values verbatim. Behavior is unchanged:
+ * `??` treats `undefined` and a missing key identically.
  */
 export function resolveDeepseekCredentials(
-  env: { DEEPSEEK_API_KEY?: string; DEEPSEEK_MODEL?: string },
-  configObj: { DEEPSEEK_API_KEY?: string; DEEPSEEK_MODEL?: string },
+  env: { DEEPSEEK_API_KEY?: string | undefined; DEEPSEEK_MODEL?: string | undefined },
+  configObj: { DEEPSEEK_API_KEY?: string | undefined; DEEPSEEK_MODEL?: string | undefined },
 ): DeepseekCredentials {
   return {
     apiKey: env.DEEPSEEK_API_KEY ?? configObj.DEEPSEEK_API_KEY ?? '',

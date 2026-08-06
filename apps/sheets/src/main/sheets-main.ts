@@ -53,7 +53,8 @@ import {
   AiTimeoutError,
   chatForProvider,
   defaultAiSettings,
-  resolveAiSettings,
+  ensureDeepseekSettings,
+  resolveDeepseekCredentials,
   streamForProvider,
   type AiProviderId,
   type AiSettings,
@@ -1213,6 +1214,45 @@ function writeJson(path: string, value: unknown): void {
 
 const SETTINGS_PATH = () => userDataPath('ai-settings.json')
 
+/**
+ * Best-effort read of the project-root `env_config.json` (dev convenience for
+ * DeepSeek credentials; the file is git-untracked and not shipped in packaged
+ * builds). Tries `process.cwd()` first (dev launch dir) then walks up from
+ * `app.getAppPath()` to cover the monorepo layout. Any parse/IO error falls
+ * through to an empty object; this helper never throws.
+ */
+function readEnvConfig(): { DEEPSEEK_API_KEY?: string; DEEPSEEK_MODEL?: string } {
+  const candidates = [
+    join(process.cwd(), 'env_config.json'),
+    join(app.getAppPath(), 'env_config.json'),
+    join(app.getAppPath(), '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', '..', '..', 'env_config.json'),
+  ]
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf-8'))
+    } catch {
+      /* skip corrupt/missing candidate */
+    }
+  }
+  return {}
+}
+
+/**
+ * Resolves DeepSeek credentials (env var -> env_config.json -> defaults) for
+ * the bootstrap helper. Mirrors the GSK_API_KEY pattern: env wins, the config
+ * file is the dev fallback, resolved values are persisted into ai-settings.json
+ * so packaged builds stop depending on env/config after first bootstrap.
+ */
+function resolveDeepseekCreds() {
+  return resolveDeepseekCredentials(
+    { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL },
+    readEnvConfig(),
+  )
+}
+
 // Dev-only automation hooks: a fixed CDP port for driving the app from test
 // scripts, and a workbook path that bypasses the native file dialog.
 const debugPort = app.isPackaged ? undefined : process.env.XLSX_DEBUG_PORT
@@ -2099,10 +2139,12 @@ export function registerSheetsAiIpc(): void {
   ipcMain.handle(IPC_CHANNELS.aiGetSettings, (event): AiSettings => {
     sessionFor(event)
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
-    const settings = resolveAiSettings(stored, defaultAiSettings())
-    // AI features all go through Genspark (gsk login); legacy settings that chose
-    // another provider are reset
-    settings.provider = 'genspark'
+    const { writeBack, settings } = ensureDeepseekSettings(
+      stored,
+      defaultAiSettings(),
+      resolveDeepseekCreds(),
+    )
+    if (writeBack) writeJson(SETTINGS_PATH(), writeBack)
     return settings
   })
 
