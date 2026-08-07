@@ -26,6 +26,21 @@ electron-builder.env
 /*.zip
 /windows/
 
+# Local dev AI provider config (contains API keys, never commit)
+/env_config.json
+
+# Local project workflow instructions (user-specific)
+/CLAUDE.md
+
+# Local orchestrator workflow docs (design/test/feature-flow artifacts)
+/docs/feature-flow-*.md
+/docs/modification.md
+/docs/technical-design.md
+/docs/optimization-checklist-*.md
+/docs/test-checklist-*.md
+/docs/test-report-*.md
+/docs/orchestrator-state.md
+
 .cursor/rules/git-remote.mdc
 __pycache__/
 /notes/
