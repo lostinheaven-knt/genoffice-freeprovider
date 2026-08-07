@@ -16,6 +16,12 @@ export {
   defaultAiSettings,
   resolveAiSettings,
 } from './providers'
+export {
+  DEEPSEEK_DEFAULT_MODEL,
+  ensureDeepseekSettings,
+  resolveDeepseekCredentials,
+} from './bootstrap'
+export type { DeepseekCredentials } from './bootstrap'
 export { chatForProvider } from './chat'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'

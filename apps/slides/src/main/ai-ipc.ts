@@ -11,7 +11,8 @@ import {
   AiCreditsError,
   AiTimeoutError,
   defaultAiSettings,
-  resolveAiSettings,
+  ensureDeepseekSettings,
+  resolveDeepseekCredentials,
   streamForProvider,
   type AiSettings,
   type AiStreamChunk,
@@ -53,14 +54,56 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2))
 }
 
+/**
+ * Best-effort read of the project-root `env_config.json` (dev convenience for
+ * DeepSeek credentials; the file is git-untracked and not shipped in packaged
+ * builds). Tries `process.cwd()` first (dev launch dir) then walks up from
+ * `app.getAppPath()` to cover the monorepo layout. Any parse/IO error falls
+ * through to an empty object; this helper never throws.
+ */
+function readEnvConfig(): { DEEPSEEK_API_KEY?: string; DEEPSEEK_MODEL?: string } {
+  const candidates = [
+    join(process.cwd(), 'env_config.json'),
+    join(app.getAppPath(), 'env_config.json'),
+    join(app.getAppPath(), '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', '..', 'env_config.json'),
+    join(app.getAppPath(), '..', '..', '..', '..', 'env_config.json'),
+  ]
+  for (const p of candidates) {
+    try {
+      if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf-8'))
+    } catch {
+      /* skip corrupt/missing candidate */
+    }
+  }
+  return {}
+}
+
+/**
+ * Resolves DeepSeek credentials (env var -> env_config.json -> defaults) for
+ * the bootstrap helper. Mirrors the GSK_API_KEY pattern: env wins, the config
+ * file is the dev fallback, resolved values are persisted into ai-settings.json
+ * so packaged builds stop depending on env/config after first bootstrap.
+ */
+function resolveDeepseekCreds() {
+  return resolveDeepseekCredentials(
+    { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY, DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL },
+    readEnvConfig(),
+  )
+}
+
 const activeAiStreams = new Map<string, AbortController>()
 
 export function registerAiIpc(): void {
   ipcMain.handle('ai:get-settings', (): AiSettings => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
-    const settings = resolveAiSettings(stored, defaultAiSettings())
-    // AI features all go through Genspark (gsk login); stored settings that chose another provider are normalized back
-    settings.provider = 'genspark'
+    const { writeBack, settings } = ensureDeepseekSettings(
+      stored,
+      defaultAiSettings(),
+      resolveDeepseekCreds(),
+    )
+    if (writeBack) writeJson(AI_SETTINGS_PATH(), writeBack)
     return settings
   })
 
