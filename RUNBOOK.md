@@ -188,8 +188,8 @@ cat ~/Library/Application\ Support/GenOffice\ Docs\ Dev/ai-settings.json
 
 在 docs app 的 AiPanel 发一条消息（如"你好"）。观察：
 
-- ✅ **正常流式响应** → DeepSeek API 接受 `deepseek-v4-flash`，端到端工作
-- ❌ **错误（invalid model / model not found）** → `deepseek-v4-flash` 不被接受（已知风险，见 §8.1）
+- ✅ **正常流式响应** → DeepSeek API 接受 `deepseek-v4-flash`，端到端工作（已实测验证：`/v1/chat/completions` + stream=true + 不带 thinking 参数，流式响应正常，含 reasoning_content）
+- ❌ **错误（网络/鉴权类）** -> 见 §8.1 排查（注意：`deepseek-v4-flash` 已验证为有效模型名，不会被 API 以 invalid model 拒绝）
 
 ### 6.3 验证错误态门控（Cycle 3）
 
@@ -258,17 +258,20 @@ npm run test:e2e
 
 ## 8. 常见问题排查
 
-### 8.1 `deepseek-v4-flash` 被 API 拒绝
+### 8.1 AI 调用报 model 错误
 
 **现象**：AiPanel 报错 `invalid model` / `model not found` / `Model Not Exist`。
 
-**根因**：`deepseek-v4-flash` 不是 DeepSeek 官方模型名（官方为 `deepseek-chat` / `deepseek-reasoner`）。引擎层不校验 model 名，原样发给 API。
+**根因**：`deepseek-v4-flash` 已实测验证为 DeepSeek API 有效模型名（`/v1/chat/completions` + 流式 + 不带 thinking 参数均正常返回，含 reasoning_content）。如果仍报 model 错误，通常是：
+- model 名拼写错误（如 `deepseek-v4-fash` 漏字符）
+- DeepSeek 下线了该模型（未来可能）
+- 用了非 DeepSeek 的端点（custom provider 误配）
 
-**解决**：编辑 ai-settings.json，把 `providers.deepseek.model` 改为：
-- `deepseek-chat`（通用对话，默认）
+**可选的替代模型**（如需切换）：
+- `deepseek-chat`（实测 DeepSeek 当前路由到 `deepseek-v4-flash`，即两者等价）
 - `deepseek-reasoner`（推理模型，更深但更慢）
 
-改完**重启 dev mode**（settings 是启动时缓存的）。
+**解决**：编辑 ai-settings.json 的 `providers.deepseek.model`，改完**重启 dev mode**（settings 是启动时缓存的）。
 
 ### 8.2 ai-settings.json 没有自动生成
 
@@ -547,7 +550,7 @@ f7af8a4 feat(ai-provider): switch default provider to deepseek
 
 | 项 | 说明 |
 |---|---|
-| `deepseek-v4-flash` 模型名 | 不在 DeepSeek 官方模型清单内，可能被 API 拒（用户已接受风险）。失败时改 `deepseek-chat` 或 `deepseek-reasoner`。|
+| `deepseek-v4-flash` 模型名 | 已实测验证为 DeepSeek API 有效模型名（不在引擎 `AI_PROVIDERS.deepseek.models` 元数据清单内，但 API 接受）。默认返回 reasoning_content（推理链），无需加 `thinking` 参数。`deepseek-chat` 是其别名（实测路由到同一模型）。|
 | API key 明文存盘 | `ai-settings.json` 明文存 key，与原项目 `~/.genoffice/auth.json` 明文存 genspark key 同等基线。勿共享该文件。|
 | prod 首次启动 key 可能为空 | `env_config.json` 不进打包，prod 无 env var 时自举写入空 key。prod 部署需设 `DEEPSEEK_API_KEY` env var 或手动放文件。|
 | pdf 独立模式 AI 不可用 | pdf main 不注册 AI handler，仅 shell 聚合模式可用。|
