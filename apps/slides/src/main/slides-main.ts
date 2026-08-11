@@ -1361,14 +1361,15 @@ export function registerSlidesIpc(): void {
     )
     return rebuildSlide(session, op.slideIndex)
   })
-  // ── Cloud single-page generation (local): brief → deepseek HTML → html string that flows
-  // through the same pagesHtml slots as any other HTML; slides:html-to-pptx converts it locally
-  // via html2pptx. Enabled when deepseek is configured in ai-settings.json; GENOFFICE_CLOUD_SLIDE=0
-  // is the kill switch.
+  // ── Cloud single-page generation (local): brief → kimi/deepseek HTML → html string that
+  // flows through the same pagesHtml slots as any other HTML; slides:html-to-pptx converts it
+  // locally via html2pptx. Enabled when kimi or deepseek is configured in ai-settings.json
+  // (the generation provider is slot-derived and decoupled from the dialog provider field);
+  // GENOFFICE_CLOUD_SLIDE=0 is the kill switch.
   const cloudSlideEnabled = () => {
     if (process.env.GENOFFICE_CLOUD_SLIDE === '0') return false
     const s = readAiSettings()
-    return s.provider === 'deepseek' && !!s.providers.deepseek?.apiKey
+    return !!s.providers.kimi?.apiKey || !!s.providers.deepseek?.apiKey
   }
 
   ipcMain.handle('slides:cloud-gen-status', () => ({ enabled: cloudSlideEnabled() }))

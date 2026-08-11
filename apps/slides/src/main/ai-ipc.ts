@@ -175,7 +175,13 @@ export function registerAiIpc(): void {
     // deepseek-v4-flash is a reasoning model: its thinking chain consumes max_tokens
     // before content starts; 8192 could be exhausted by the chain alone, leaving
     // content empty ("no reply"). 100k leaves ample room (verified accepted).
-    const maxTokens = request.maxTokens ?? 100_000
+    // Kimi (Volcano Ark) hard cap is 32768 (100000/64000 rejected): clamp defensively
+    // for callers that omit maxTokens (e.g. the QC loop) or pass an oversized value.
+    // NOTE: read settings.provider here, not the `provider` local declared below (TDZ).
+    const maxTokens =
+      settings.provider === 'kimi'
+        ? Math.min(request.maxTokens ?? 32_768, 32_768)
+        : (request.maxTokens ?? 100_000)
     const provider = settings.provider
     let config = settings.providers?.[provider]
     // The genspark key never enters the settings file; it is fetched from the gsk login state per request
