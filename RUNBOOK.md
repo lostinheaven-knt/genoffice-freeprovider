@@ -14,6 +14,8 @@ GenOffice 是一个桌面端 office 套件（docs / sheets / slides / pdf / shel
 - 3 个 app 主进程（docs / sheets / slides）的 `ai:get-settings` handler 接线 bootstrap，删除原硬锁 `settings.provider = 'genspark'`
 - 3 个渲染进程的错误态 `aiGskStatus()` 调用加 provider 门控，避免 deepseek 报错时误显「Sign in to Genspark」登录按钮
 - 保留 genspark key 注入分支与 gsk handler 为休眠代码，未来切回 genspark 无需改代码
+- **slides 的 cloud generation（精美页面生成）从 gsk 云端 `slide_generate` 改为完全本地**：deepseek 生成 HTML + 本地 `html2pptx` 模块转 pptx，不再依赖 gsk 登录（详见 §11.4）
+- 新增 `packages/pptx-engine/src/html2pptx.ts`：HTML -> 单页 pptx 转换模块（pptxgenjs + cheerio），支持 p/h1-6/ul/ol/div/img + CSS absolute 定位
 
 **DeepSeek 配置**：通过项目根 `env_config.json` 提供 API key + model，首次启动自举固化到 `ai-settings.json`。
 
@@ -459,7 +461,10 @@ npm run dist:linux  # Linux deb/AppImage
 | `packages/ai-provider/src/chat.ts` | chatForProvider（非流式）|
 | `apps/docs/src/main/docs-main.ts` | docs 主进程，`ai:get-settings` 接线（:2517）+ readEnvConfig（:2011）|
 | `apps/sheets/src/main/sheets-main.ts` | sheets 主进程，同构（:2139）|
-| `apps/slides/src/main/ai-ipc.ts` | slides 主进程，同构（:99）|
+| `apps/slides/src/main/ai-ipc.ts` | slides 主进程，`readAiSettings`（:104-113）+ ai:stream |
+| `apps/slides/src/main/slides-main.ts` | slides cloud generation handlers：cloudSlideEnabled（:1367）+ cloud-page-generate（:1376，deepseek 生成 HTML）+ html-to-pptx（:1454，convertHtmlPage）|
+| `packages/pptx-engine/src/html2pptx.ts` | HTML -> 单页 pptx 转换（pptxgenjs + cheerio，Phase 2 新增，482 行）|
+| `apps/slides/src/renderer/ai/slides-skill.ts` | generate_deck / regenerate_slide（调 cloud-page-generate + html-to-pptx）|
 | `apps/docs/src/renderer/ai/AiPanel.tsx` | docs AI 面板，错误态 gsk 门控（:593）|
 | `apps/sheets/src/renderer/App.tsx` | sheets，门控（:919）|
 | `apps/slides/src/renderer/ai/AiPanel.tsx` | slides，门控（:1192）|
@@ -495,6 +500,36 @@ npm run dist:linux  # Linux deb/AppImage
 
 引擎硬编码 base URL 为 `https://api.deepseek.com/v1`（`stream.ts:841`），不读 `config.baseUrl`（仅 custom provider 读）。`env_config.json` 的 `DEEPSEEK_BASE_URL` 不被引擎消费，DeepSeek API 对根路径与 `/v1` 等价。
 
+### 11.4 Slides Cloud Generation（本地 HTML->pptx）
+
+生成精美 slide 的流程（**不再依赖 gsk 云端，无需 gsk 登录**）：
+
+```
+用户说"生成 PPT" -> generate_deck（slides-skill.ts）
+  -> Step 0/1/1.5: Style Skill / outline 规划 / 图片搜索（本地 provider / Serper）
+  -> Step 2: 每页 cloud-page-generate IPC（slides-main.ts:1376）
+    -> deepseek 流式生成 HTML（CLOUD_PAGE_SYSTEM_PROMPT 强约束 html2pptx 格式）
+    -> stripCodeFence -> { ok: true, html }
+  -> html-to-pptx IPC（slides-main.ts:1454）
+    -> convertHtmlPage: html2pptx（packages/pptx-engine/src/html2pptx.ts）
+    -> mergeSlideFromPptx 合并进 deck + promoteSlideBackground
+  -> 生成后 QC pass（slide-qc.ts，本地 provider）
+```
+
+**启用条件**：`cloudSlideEnabled()`（slides-main.ts:1367）= ai-settings.json 的 `provider === 'deepseek'` 且 `providers.deepseek.apiKey` 非空。
+
+**环境变量**：
+- `GENOFFICE_CLOUD_SLIDE=0`：kill switch，禁用 cloud generation
+- `GENOFFICE_CLOUD_SLIDE_MODEL=<model>`：覆盖生成模型（如 `deepseek-reasoner`，A/B 测试用）
+- `GENOFFICE_CLOUD_SLIDE_TIER`：已失效（gsk 时代概念，无读取点）
+
+**HTML 格式约束**（html2pptx 要求，deepseek system prompt 已约束）：
+- 文本必须在 `<p>`/`<h1>`-`<h6>`/`<ul>`/`<ol>` 里，`<div>` 只做容器/shape（不带直接文本）
+- 字体：web-safe（Arial/Helvetica/Georgia/Times New Roman/Courier New/Verdana/Tahoma/Trebuchet MS）
+- 颜色：`#RRGGBB` hex 格式
+- 定位：`position:absolute` + `left/top/width/height`（px）；**flexbox 不支持**
+- 图片：`<img src="真实URL">`，只使用提供的 URL
+
 ---
 
 ## 12. 文档索引
@@ -529,6 +564,14 @@ upstream  → genspark-ai/genoffice                     (原项目，同步更�
 ### 13.2 关键 commits（provider 切换）
 
 ```
+8bf4e87 Merge branch 'feat/slides-html2pptx': local HTML->pptx cloud generation (bug1)
+68054ab test(slides): sync cloudGeneratePage mocks to html contract (marker -> html)
+7c9a0d5 feat(slides): switch renderer cloud page generation to html (marker -> html)
+d2236d7 test(pptx-engine): cover font-size conversion and inline runs
+e56f620 feat(slides): local cloud page generation via deepseek + html2pptx
+236eb1a feat(pptx-engine): add html2pptx module with TDD
+147cb3a build(pptx-engine): move pptxgenjs to dependencies, add cheerio
+9409034 fix(sheets): accept inputError/truncated on ai:stream toolCalls
 5321d19 chore: gitignore local dev config (env_config.json) and workflow docs
 5a2f933 Merge branch 'feat/deepseek-provider': switch AI provider from Genspark to DeepSeek
 ac65e44 style(ai-provider): fix pre-existing prettier formatting in providers.test.ts
@@ -543,6 +586,7 @@ f7af8a4 feat(ai-provider): switch default provider to deepseek
 
 - `main`：稳定分支，含 provider 切换 + .gitignore 防护
 - `feat/deepseek-provider`：已删除（已 merge 到 main）
+- `feat/slides-html2pptx`：已删除（已 merge 到 main）
 
 ---
 
@@ -557,6 +601,7 @@ f7af8a4 feat(ai-provider): switch default provider to deepseek
 | 切回 genspark 会被迁移 | bootstrap migrate 分支会把 `provider='genspark'` 自动改回 deepseek。如需长期用 genspark，需改 `bootstrap.ts` keep 条件。|
 | 无 provider 选择 UI | 本仓库不加 UI（决策 7），换 provider 需编辑 ai-settings.json。|
 | `env_config.json` 不进 git | 含 key，已 gitignore。`env_config.example.json` 是模板。|
+| slides cloud generation 质量 | 精美页面由 deepseek 生成 HTML + 本地 html2pptx 转 pptx（html2pptx.ts）。主观质量可能低于 gsk 专有管线（已知风险，人工评估项）。布局约束 position:absolute（flexbox 不支持）。质量不足时用 `GENOFFICE_CLOUD_SLIDE_MODEL=deepseek-reasoner` 切换模型测试。|
 
 ---
 
