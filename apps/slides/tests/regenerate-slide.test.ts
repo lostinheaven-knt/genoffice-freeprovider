@@ -32,10 +32,10 @@ beforeEach(() => {
   ;(window as any).slidesApi = { deleteSlide: vi.fn(async () => [page, page]) }
 })
 
-const cloudOk = () => vi.fn(async () => ({ ok: true, marker: 'cloudpptx:/tmp/p.pptx' }))
+const cloudOk = () => vi.fn(async () => ({ ok: true, html: 'cloudpptx:/tmp/p.pptx' }))
 
 describe('regenerate_slide', () => {
-  it('brief → cloud generates marker → calls access.regenerateSlide to land it', async () => {
+  it('brief → cloud generates html → calls access.regenerateSlide to land it', async () => {
     const regenerateSlide = vi.fn(async () => ({ ok: true }))
     const generatePageCloud = cloudOk()
     const skill = createSlidesSkill(
