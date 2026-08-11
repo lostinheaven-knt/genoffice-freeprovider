@@ -26,7 +26,7 @@ function makeAccess(opts?: { failPages?: number[] }) {
     isCloudPageGenEnabled: async () => true,
     generatePageCloud: async (args) => {
       if (failPages.has(args.pageIndex)) return { ok: false, error: 'mock fail' }
-      return { ok: true, marker: `PAGE${args.pageIndex}:${args.title}` }
+      return { ok: true, html: `PAGE${args.pageIndex}:${args.title}` }
     },
     generateFromHtml: async (
       pagesHtml,

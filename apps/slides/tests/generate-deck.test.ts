@@ -77,10 +77,10 @@ function makeAccess(opts?: {
         failAttempts[args.pageIndex] -= 1
         return { ok: false, error: 'transient' }
       }
-      // Return an identifiable marker (with page order); the mock landing treats it like the real cloudpptx: marker
+      // Return an identifiable HTML string (with page order); the mock landing treats it like the real cloud-generated page HTML
       return {
         ok: true,
-        marker: `<!doctype html><html><body>PAGE${args.pageIndex}:${args.title}</body></html>`,
+        html: `<!doctype html><html><body>PAGE${args.pageIndex}:${args.title}</body></html>`,
       }
     },
     generateStyleSkill: async (a) => {
@@ -623,7 +623,7 @@ describe('generate_deck content audit', () => {
     // Simulate the cloud returning a page with leftover template filler
     access.generatePageCloud = async (args) => ({
       ok: true,
-      marker:
+      html:
         args.pageIndex === 2
           ? '<!doctype html><html><body><h1>Chapter</h1><p>Copy paste fonts. Choose the only option to retain text.</p></body></html>'
           : `<!doctype html><html><body>PAGE${args.pageIndex}: real content about the weekly numbers</body></html>`,
@@ -654,7 +654,7 @@ describe('generate_deck content audit', () => {
     const { access } = makeAccess()
     access.generatePageCloud = async (args) => ({
       ok: true,
-      marker: `<!doctype html><html><body>PAGE${args.pageIndex}: real content about the weekly numbers</body></html>`,
+      html: `<!doctype html><html><body>PAGE${args.pageIndex}: real content about the weekly numbers</body></html>`,
     })
     const skill = createSlidesSkill(access)
     const call: AgentToolCall = {

@@ -1013,9 +1013,9 @@ export interface SlidesApi {
       })
     | { error: string }
   >
-  /** Whether cloud single-page generation (gsk slide_generate) is available (GENOFFICE_CLOUD_SLIDE=1 + gsk login) */
+  /** Whether cloud single-page generation is available (GENOFFICE_CLOUD_SLIDE=1 + deepseek configured in ai-settings.json) */
   cloudGenStatus: () => Promise<{ enabled: boolean }>
-  /** Cloud single-page generation: brief → one-slide pptx temp file; the marker goes into an htmlToPptx pagesHtml slot in place of HTML */
+  /** Cloud single-page generation: brief → HTML generated locally via deepseek; the html goes into an htmlToPptx pagesHtml slot */
   cloudGeneratePage: (op: {
     brief: string
     title?: string
@@ -1024,7 +1024,7 @@ export interface SlidesApi {
     images?: { url: string; caption?: string }[]
     width?: number
     height?: number
-  }) => Promise<{ ok: boolean; marker?: string; error?: string }>
+  }) => Promise<{ ok: boolean; html?: string; error?: string }>
   editText: (op: EditTextOp) => Promise<RenderSlide | null>
   /** Change font/size on selected elements wholesale (elements without text ignored; returns null if all ignored) */
   setElementFont: (op: SetElementFontOp) => Promise<RenderSlide | null>
