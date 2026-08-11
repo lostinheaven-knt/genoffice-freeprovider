@@ -98,6 +98,84 @@ describe('html2pptx', () => {
       // Engine model convention: colors carry the '#' prefix (see color.ts resolveColorNode)
       expect(bg).toEqual({ type: 'solid', color: '#0B2545' })
     })
+
+    // P1-1 (optimization-checklist-slides-v1): font-size px -> pt conversion has no test lock
+    it('converts font-size px to pt (32px -> 24pt) and heading defaults (h1 28px -> 21pt)', async () => {
+      const html =
+        '<div style="width:1280px;height:720px">' +
+        '<p style="position:absolute;left:10px;top:10px;width:200px;height:40px;font-size:32px">Big</p>' +
+        '<h1 style="position:absolute;left:10px;top:60px;width:200px;height:40px">Heading</h1></div>'
+      const { bytes } = await html2pptx(html, { width: 1280, height: 720 })
+      const opened = await openPptx(bytes)
+      const runs = opened.deck.slides[0]!.elements.flatMap(
+        (e) =>
+          (
+            e as {
+              text?: { paragraphs: Array<{ runs: Array<{ text: string; fontSize?: number }> }> }
+            }
+          ).text?.paragraphs.flatMap((p) => p.runs) ?? [],
+      )
+      // 32px * 0.75 = 24pt (modification §7.3)
+      const big = runs.find((r) => r.text === 'Big')
+      expect(big?.fontSize).toBe(24)
+      // h1 default is 28px -> 21pt (HEADING_DEFAULT_PX)
+      const heading = runs.find((r) => r.text === 'Heading')
+      expect(heading?.fontSize).toBe(21)
+    })
+  })
+
+  // P1-2 (optimization-checklist-slides-v1): parseInlineRuns has zero unit coverage
+  describe('inline run parsing (b/i/span)', () => {
+    it('maps <b>/<i>/<span color> to runs with bold/italic/color', async () => {
+      const html =
+        '<div style="width:1280px;height:720px">' +
+        '<p style="position:absolute;left:10px;top:10px;width:400px;height:60px;font-size:16px">' +
+        'Hello <b>bold</b> <i>italic</i> <span style="color:#FF0000">red</span></p></div>'
+      const { bytes } = await html2pptx(html, { width: 1280, height: 720 })
+      const opened = await openPptx(bytes)
+      const runs = opened.deck.slides[0]!.elements.flatMap(
+        (e) =>
+          (
+            e as {
+              text?: {
+                paragraphs: Array<{
+                  runs: Array<{ text: string; bold?: boolean; italic?: boolean; color?: string }>
+                }>
+              }
+            }
+          ).text?.paragraphs.flatMap((p) => p.runs) ?? [],
+      )
+      const bold = runs.find((r) => r.text === 'bold')
+      expect(bold?.bold).toBe(true)
+      const italic = runs.find((r) => r.text === 'italic')
+      expect(italic?.italic).toBe(true)
+      // span color normalized to engine model format (with '#', see color.ts resolveColorNode)
+      const red = runs.find((r) => r.text === 'red')
+      expect(red?.color).toBe('#FF0000')
+      // plain text runs keep only base options; pptxgenjs defaults the fill to black
+      const hello = runs.find((r) => r.text.includes('Hello'))
+      expect(hello?.bold).toBeFalsy()
+      expect(hello?.italic).toBeFalsy()
+      expect(hello?.color).toBe('#000000')
+    })
+
+    it('maps <br> inside a paragraph to a line-break run', async () => {
+      const html =
+        '<div style="width:1280px;height:720px">' +
+        '<p style="position:absolute;left:10px;top:10px;width:200px;height:60px">line1<br>line2</p></div>'
+      const { bytes } = await html2pptx(html, { width: 1280, height: 720 })
+      const opened = await openPptx(bytes)
+      const texts = opened.deck.slides[0]!.elements.flatMap(
+        (e) =>
+          (
+            e as {
+              text?: { paragraphs: Array<{ runs: Array<{ text: string }> }> }
+            }
+          ).text?.paragraphs.flatMap((p) => p.runs.map((r) => r.text)) ?? [],
+      )
+      expect(texts.join('|')).toContain('line1')
+      expect(texts.join('|')).toContain('line2')
+    })
   })
 
   describe('Step A6/A7: image download + imageFailures', () => {
