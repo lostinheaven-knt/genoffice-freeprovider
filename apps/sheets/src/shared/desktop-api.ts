@@ -1739,6 +1739,12 @@ const agentToolCallSchema = z
     id: z.string(),
     name: z.string(),
     input: z.record(z.string(), z.unknown()),
+    // AgentToolCall (packages/agent-core/src/types.ts) carries these when the
+    // model emits invalid input JSON (inputError) or the token limit cuts off
+    // arguments (truncated); the agent loop pushes them into history and sends
+    // them back on ai:stream, so the schema must accept them.
+    inputError: z.string().optional(),
+    truncated: z.boolean().optional(),
   })
   .strict()
 
