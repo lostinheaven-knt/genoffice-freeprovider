@@ -748,15 +748,10 @@ export async function planCellEditsToXlsx(
   let workbookXml = originalWorkbookXml
   for (const { sheetName, ops } of structuralOps) {
     if (ops.length === 0) continue
-    // [DEBUG-h2p] diagnostic: log which sheet + ops hit an XML without sheetData
-    const targetXml = worksheetXmls.get(sheetName) ?? ''
-    if (!targetXml.includes('</sheetData>') && !/<sheetData\s*\/>/.test(targetXml)) {
-      console.error(
-        `[DEBUG-h2p] applyStructuralOps on sheet "${sheetName}" with NO sheetData ` +
-          `ops=[${ops.map((o) => o.kind).join(',')}] xmlHead=${JSON.stringify(targetXml.slice(0, 200))}`,
-      )
-    }
-    worksheetXmls.set(sheetName, applyStructuralOps(targetXml, ops, sheetName))
+    worksheetXmls.set(
+      sheetName,
+      applyStructuralOps(worksheetXmls.get(sheetName) ?? '', ops, sheetName),
+    )
     const editedPath = worksheetPaths.get(sheetName)
     if (editedPath !== undefined) {
       await shiftAnchoredSheetParts(
@@ -1678,11 +1673,6 @@ function insertRowInOrder(worksheetXml: string, rowNumber: number, cellXml: stri
   if (emptySheetData.test(worksheetXml)) {
     return worksheetXml.replace(emptySheetData, () => `<sheetData>${newRow}</sheetData>`)
   }
-  // [DEBUG-h2p] diagnostic: which worksheet hit the no-sheetData case in the cell-edit path
-  console.error(
-    `[DEBUG-h2p] insertRowInOrder: worksheet has no sheetData (row=${rowNumber} ` +
-      `xmlLen=${worksheetXml.length} xmlHead=${JSON.stringify(worksheetXml.slice(0, 200))})`,
-  )
   throw new Error('Worksheet has no sheetData element.')
 }
 
