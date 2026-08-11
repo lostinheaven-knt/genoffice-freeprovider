@@ -2547,7 +2547,10 @@ export function registerAiIpc(): void {
   ipcMain.handle('ai:stream', async (event, request: AiStreamRequest) => {
     const { requestId, settings, system, messages } = request
     const tools = request.tools ?? []
-    const maxTokens = request.maxTokens ?? 8192
+    // deepseek-v4-flash is a reasoning model: its thinking chain consumes max_tokens
+      // before content starts; 8192 could be exhausted by the chain alone, leaving
+      // content empty ("no reply"). 100k leaves ample room (verified accepted).
+      const maxTokens = request.maxTokens ?? 100_000
     const provider = settings.provider
     let config = settings.providers?.[provider]
     // the genspark key never enters the settings file; requests take it from the gsk login state
