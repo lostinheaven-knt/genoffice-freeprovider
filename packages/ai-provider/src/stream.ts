@@ -1,6 +1,10 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { httpBodyDetail } from './http-error'
-import { GENSPARK_LLM_BASE_URLS, gensparkAttributionHeaders } from './providers'
+import {
+  GENSPARK_LLM_BASE_URLS,
+  KIMI_DEFAULT_BASE_URL,
+  gensparkAttributionHeaders,
+} from './providers'
 import type { AiProviderConfig, AiProviderId } from './types'
 import { createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -895,6 +899,19 @@ export async function streamForProvider(
     case 'openai':
       return streamOpenAiCompatible(
         OPENAI_COMPATIBLE_BASE_URLS[provider]!,
+        config,
+        system,
+        messages,
+        tools,
+        maxTokens,
+        cb,
+      )
+    case 'kimi':
+      // Kimi (Volcano Ark) is OpenAI-compatible; the base URL comes from the
+      // config slot (bootstrap writes it), with the default Ark endpoint as a
+      // fallback for hand-edited files that lost the baseUrl.
+      return streamOpenAiCompatible(
+        config.baseUrl?.trim() || KIMI_DEFAULT_BASE_URL,
         config,
         system,
         messages,

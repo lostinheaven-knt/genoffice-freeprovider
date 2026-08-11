@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { AI_PROVIDERS, defaultAiSettings, resolveAiSettings } from '../src/providers'
+import {
+  AI_PROVIDERS,
+  KIMI_DEFAULT_MODEL,
+  defaultAiSettings,
+  resolveAiSettings,
+} from '../src/providers'
+
+describe('kimi provider metadata', () => {
+  it('exposes the kimi slot in AI_PROVIDERS with the default model and a baseUrl requirement', () => {
+    const meta = AI_PROVIDERS.find((p) => p.id === 'kimi')
+    expect(meta).toBeDefined()
+    expect(meta!.label).toBe('Kimi')
+    expect(meta!.models).toEqual(['kimi-k2.7-code'])
+    expect(meta!.defaultModel).toBe(KIMI_DEFAULT_MODEL)
+    expect(meta!.needsBaseUrl).toBe(true)
+  })
+
+  it('defaultAiSettings gives kimi an empty key and an empty baseUrl string (like custom)', () => {
+    const settings = defaultAiSettings()
+    expect(settings.providers.kimi).toEqual({
+      apiKey: '',
+      model: KIMI_DEFAULT_MODEL,
+      baseUrl: '',
+    })
+  })
+})
 
 describe('defaultAiSettings', () => {
   it('gives every provider its default model and an empty key by default', () => {
@@ -10,6 +35,7 @@ describe('defaultAiSettings', () => {
       expect(settings.providers[meta.id].model).toBe(meta.defaultModel)
     }
     expect(settings.providers.custom.baseUrl).toBe('')
+    expect(settings.providers.kimi.baseUrl).toBe('')
     expect(settings.providers.anthropic.baseUrl).toBeUndefined()
   })
 

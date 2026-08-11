@@ -24,6 +24,10 @@ export function gensparkAttributionHeaders(baseUrl?: string): Record<string, str
     : {}
 }
 
+/** Default Kimi (Volcano Ark) endpoint; config.baseUrl overrides it per user setup. */
+export const KIMI_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3'
+export const KIMI_DEFAULT_MODEL = 'kimi-k2.7-code'
+
 export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'genspark',
@@ -69,6 +73,14 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     models: ['deepseek-chat', 'deepseek-reasoner'],
     defaultModel: 'deepseek-chat',
     keyPlaceholder: 'sk-...',
+  },
+  {
+    id: 'kimi',
+    label: 'Kimi',
+    models: ['kimi-k2.7-code'],
+    defaultModel: KIMI_DEFAULT_MODEL,
+    keyPlaceholder: 'sk-...',
+    needsBaseUrl: true,
   },
   {
     id: 'openai',

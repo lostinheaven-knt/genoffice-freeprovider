@@ -679,6 +679,74 @@ describe('streamForProvider: openai-compatible', () => {
   })
 })
 
+describe('streamForProvider: kimi', () => {
+  it('routes to streamOpenAiCompatible with config.baseUrl and passes max_tokens', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ])
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(body))
+    vi.stubGlobal('fetch', fetchMock)
+    const { deltas, cb } = collector()
+    await streamForProvider(
+      'kimi',
+      {
+        apiKey: 'kimi-key',
+        model: 'kimi-k2.7-code',
+        baseUrl: 'https://ark.example.com/api/coding/v3',
+      },
+      'sys',
+      [],
+      [],
+      32768,
+      cb,
+    )
+    expect(deltas).toEqual(['hi'])
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://ark.example.com/api/coding/v3/chat/completions')
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer kimi-key' })
+    expect(JSON.parse(String(init.body)).max_tokens).toBe(32768)
+  })
+
+  it('falls back to KIMI_DEFAULT_BASE_URL when config.baseUrl is empty', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ])
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(body))
+    vi.stubGlobal('fetch', fetchMock)
+    const { cb } = collector()
+    await streamForProvider(
+      'kimi',
+      { apiKey: 'k', model: 'kimi-k2.7-code' },
+      'sys',
+      [],
+      [],
+      32768,
+      cb,
+    )
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions',
+    )
+  })
+
+  it('rejects on an empty stream like other OpenAI-compatible providers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream([]))))
+    const { cb } = collector()
+    await expect(
+      streamForProvider(
+        'kimi',
+        { apiKey: 'k', model: 'kimi-k2.7-code', baseUrl: 'https://x.example.com' },
+        'sys',
+        [],
+        [],
+        32768,
+        cb,
+      ),
+    ).rejects.toThrow(/The model returned no content/)
+  })
+})
+
 describe('streamForProvider: genspark', () => {
   it('routes claude models to the Anthropic-compatible proxy endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
