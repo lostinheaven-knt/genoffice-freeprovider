@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { ensureDeepseekSettings, resolveDeepseekCredentials } from '../src/bootstrap'
-import { defaultAiSettings } from '../src/providers'
+import {
+  ensureDeepseekSettings,
+  resolveDeepseekCredentials,
+  resolveKimiCredentials,
+} from '../src/bootstrap'
+import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL, defaultAiSettings } from '../src/providers'
 
 describe('resolveDeepseekCredentials', () => {
   it('prefers env vars over the config object', () => {
@@ -22,6 +26,32 @@ describe('resolveDeepseekCredentials', () => {
   it('uses empty key and the deepseek-v4-flash constant when both sources are empty', () => {
     const c = resolveDeepseekCredentials({}, {})
     expect(c).toEqual({ apiKey: '', model: 'deepseek-v4-flash' })
+  })
+})
+
+describe('resolveKimiCredentials', () => {
+  it('prefers env over configObj over defaults', () => {
+    const c = resolveKimiCredentials(
+      {
+        KIMI_API_KEY: 'env-key',
+        KIMI_MODEL: 'env-model',
+        KIMI_BASE_URL: 'https://env.example.com',
+      },
+      {
+        KIMI_API_KEY: 'cfg-key',
+        KIMI_MODEL: 'cfg-model',
+        KIMI_BASE_URL: 'https://cfg.example.com',
+      },
+    )
+    expect(c).toEqual({ apiKey: 'env-key', model: 'env-model', baseUrl: 'https://env.example.com' })
+    const d = resolveKimiCredentials({}, { KIMI_API_KEY: 'cfg-key' })
+    expect(d).toEqual({
+      apiKey: 'cfg-key',
+      model: KIMI_DEFAULT_MODEL,
+      baseUrl: KIMI_DEFAULT_BASE_URL,
+    })
+    const e = resolveKimiCredentials({}, {})
+    expect(e).toEqual({ apiKey: '', model: KIMI_DEFAULT_MODEL, baseUrl: KIMI_DEFAULT_BASE_URL })
   })
 })
 

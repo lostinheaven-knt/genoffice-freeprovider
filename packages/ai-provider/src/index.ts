@@ -13,6 +13,8 @@ export type {
 export {
   AI_PROVIDERS,
   GENSPARK_LLM_BASE_URLS,
+  KIMI_DEFAULT_BASE_URL,
+  KIMI_DEFAULT_MODEL,
   defaultAiSettings,
   resolveAiSettings,
 } from './providers'
@@ -20,8 +22,9 @@ export {
   DEEPSEEK_DEFAULT_MODEL,
   ensureDeepseekSettings,
   resolveDeepseekCredentials,
+  resolveKimiCredentials,
 } from './bootstrap'
-export type { DeepseekCredentials } from './bootstrap'
+export type { DeepseekCredentials, KimiCredentials } from './bootstrap'
 export { chatForProvider } from './chat'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'

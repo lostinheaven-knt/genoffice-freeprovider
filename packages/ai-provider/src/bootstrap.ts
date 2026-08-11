@@ -1,5 +1,5 @@
 import type { AiSettings, LegacyAiSettings } from './types'
-import { resolveAiSettings } from './providers'
+import { KIMI_DEFAULT_BASE_URL, KIMI_DEFAULT_MODEL, resolveAiSettings } from './providers'
 
 /** Default model written into ai-settings.json when no model is resolved from env/config. */
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
@@ -7,6 +7,12 @@ export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
 export interface DeepseekCredentials {
   apiKey: string
   model: string
+}
+
+export interface KimiCredentials {
+  apiKey: string
+  model: string
+  baseUrl: string
 }
 
 /**
@@ -29,6 +35,33 @@ export function resolveDeepseekCredentials(
   return {
     apiKey: env.DEEPSEEK_API_KEY ?? configObj.DEEPSEEK_API_KEY ?? '',
     model: env.DEEPSEEK_MODEL ?? configObj.DEEPSEEK_MODEL ?? DEEPSEEK_DEFAULT_MODEL,
+  }
+}
+
+/**
+ * Pure credential resolver for the kimi slot, mirroring
+ * resolveDeepseekCredentials: env -> configObj (env_config.json) -> defaults.
+ * Does no file I/O; the caller forwards a subset of `process.env` and the
+ * parsed `env_config.json` object. baseUrl defaults to the Ark endpoint so a
+ * bootstrap-seeded slot always carries a usable URL (streamForProvider also
+ * falls back to KIMI_DEFAULT_BASE_URL when the slot's baseUrl is empty).
+ */
+export function resolveKimiCredentials(
+  env: {
+    KIMI_API_KEY?: string | undefined
+    KIMI_MODEL?: string | undefined
+    KIMI_BASE_URL?: string | undefined
+  },
+  configObj: {
+    KIMI_API_KEY?: string | undefined
+    KIMI_MODEL?: string | undefined
+    KIMI_BASE_URL?: string | undefined
+  },
+): KimiCredentials {
+  return {
+    apiKey: env.KIMI_API_KEY ?? configObj.KIMI_API_KEY ?? '',
+    model: env.KIMI_MODEL ?? configObj.KIMI_MODEL ?? KIMI_DEFAULT_MODEL,
+    baseUrl: env.KIMI_BASE_URL ?? configObj.KIMI_BASE_URL ?? KIMI_DEFAULT_BASE_URL,
   }
 }
 

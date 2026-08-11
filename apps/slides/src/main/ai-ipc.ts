@@ -13,6 +13,7 @@ import {
   defaultAiSettings,
   ensureDeepseekSettings,
   resolveDeepseekCredentials,
+  resolveKimiCredentials,
   streamForProvider,
   type AiSettings,
   type AiStreamChunk,
@@ -61,7 +62,13 @@ function writeJson(path: string, value: unknown): void {
  * `app.getAppPath()` to cover the monorepo layout. Any parse/IO error falls
  * through to an empty object; this helper never throws.
  */
-function readEnvConfig(): { DEEPSEEK_API_KEY?: string; DEEPSEEK_MODEL?: string } {
+function readEnvConfig(): {
+  DEEPSEEK_API_KEY?: string
+  DEEPSEEK_MODEL?: string
+  KIMI_API_KEY?: string
+  KIMI_MODEL?: string
+  KIMI_BASE_URL?: string
+} {
   const candidates = [
     join(process.cwd(), 'env_config.json'),
     join(app.getAppPath(), 'env_config.json'),
@@ -93,13 +100,25 @@ function resolveDeepseekCreds() {
   )
 }
 
+/** Resolves Kimi credentials (env var -> env_config.json -> defaults) for the bootstrap step. */
+function resolveKimiCreds() {
+  return resolveKimiCredentials(
+    {
+      KIMI_API_KEY: process.env.KIMI_API_KEY,
+      KIMI_MODEL: process.env.KIMI_MODEL,
+      KIMI_BASE_URL: process.env.KIMI_BASE_URL,
+    },
+    readEnvConfig(),
+  )
+}
+
 /**
- * Current effective AI settings: ai-settings.json with the deepseek bootstrap
- * applied (migration + first-run credential write-back). Shared by the
- * `ai:get-settings` handler and the slides cloud-page-generate pipeline so the
- * "is deepseek configured" check and the actual stream call read the same
- * config. The write-back side effect only fires on first run / migration;
- * subsequent calls are pure reads.
+ * Current effective AI settings: ai-settings.json with the deepseek + kimi
+ * bootstrap applied (migration + first-run credential write-back). Shared by
+ * the `ai:get-settings` handler and the slides cloud-page-generate pipeline so
+ * the "is a generation provider configured" check and the actual stream call
+ * read the same config. The write-back side effect only fires on first run /
+ * migration / first kimi seed; subsequent calls are pure reads.
  */
 export function readAiSettings(): AiSettings {
   const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
@@ -108,7 +127,21 @@ export function readAiSettings(): AiSettings {
     defaultAiSettings(),
     resolveDeepseekCreds(),
   )
-  if (writeBack) writeJson(AI_SETTINGS_PATH(), writeBack)
+  // Kimi bootstrap: seed the slot only when it has no key yet (stored wins after
+  // first seed, mirroring the deepseek pattern); the resolved baseUrl covers the
+  // hand-edited-file case where the slot only exists via defaults-merge.
+  const kimiCreds = resolveKimiCreds()
+  let kimiSeeded = false
+  if (!settings.providers.kimi?.apiKey && kimiCreds.apiKey) {
+    settings.providers.kimi = {
+      apiKey: kimiCreds.apiKey,
+      model: kimiCreds.model,
+      baseUrl: kimiCreds.baseUrl,
+    }
+    kimiSeeded = true
+  }
+  // single write for both bootstrap paths: settings is the complete resolved object
+  if (writeBack || kimiSeeded) writeJson(AI_SETTINGS_PATH(), settings)
   return settings
 }
 
