@@ -93,19 +93,29 @@ function resolveDeepseekCreds() {
   )
 }
 
+/**
+ * Current effective AI settings: ai-settings.json with the deepseek bootstrap
+ * applied (migration + first-run credential write-back). Shared by the
+ * `ai:get-settings` handler and the slides cloud-page-generate pipeline so the
+ * "is deepseek configured" check and the actual stream call read the same
+ * config. The write-back side effect only fires on first run / migration;
+ * subsequent calls are pure reads.
+ */
+export function readAiSettings(): AiSettings {
+  const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
+  const { writeBack, settings } = ensureDeepseekSettings(
+    stored,
+    defaultAiSettings(),
+    resolveDeepseekCreds(),
+  )
+  if (writeBack) writeJson(AI_SETTINGS_PATH(), writeBack)
+  return settings
+}
+
 const activeAiStreams = new Map<string, AbortController>()
 
 export function registerAiIpc(): void {
-  ipcMain.handle('ai:get-settings', (): AiSettings => {
-    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
-    const { writeBack, settings } = ensureDeepseekSettings(
-      stored,
-      defaultAiSettings(),
-      resolveDeepseekCreds(),
-    )
-    if (writeBack) writeJson(AI_SETTINGS_PATH(), writeBack)
-    return settings
-  })
+  ipcMain.handle('ai:get-settings', (): AiSettings => readAiSettings())
 
   // Genspark account (gsk login state): the auth source for AI features; when logged out the frontend uses this to guide login
   ipcMain.handle(

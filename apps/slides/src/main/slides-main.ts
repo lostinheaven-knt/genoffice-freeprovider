@@ -20,11 +20,12 @@ import {
 import type { WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { readFile, writeFile, rm, stat, mkdir, open } from 'node:fs/promises'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
-import { gskApiKey, gskSlideGenerate, setGskProxyUrl } from '@genoffice/ai-search'
+import { setGskProxyUrl } from '@genoffice/ai-search'
+import { streamForProvider } from '@genoffice/ai-provider'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -99,6 +100,7 @@ import {
   getSlideAnimations,
   setSlideAnimations,
   type SlideAnimation,
+  html2pptx,
   openPptx,
   mergeSlideFromPptx,
   promoteSlideBackground,
@@ -246,7 +248,7 @@ import {
   windowRefs,
   type Session,
 } from './session-state'
-import { registerAiIpc, registerSlidesOnlyAiIpc } from './ai-ipc'
+import { registerAiIpc, registerSlidesOnlyAiIpc, readAiSettings } from './ai-ipc'
 
 /** One slide, copied from any deck open in this process, waiting to be pasted into another. */
 let slideClipboard: { bundle: SlideBundle; png?: string } | null = null
@@ -254,10 +256,84 @@ let slideClipboard: { bundle: SlideBundle; png?: string } | null = null
 /** The immediately preceding slide paste per webContents, so the paste-options floater can redo it with another mode. */
 const lastSlidePaste = new Map<number, { afterIndex: number; undoLen: number }>()
 
-// Cloud-generated single-page pptx: marker strings travel in pagesHtml slots; only paths issued
-// by slides:cloud-page-generate are readable (the renderer can't point the reader at arbitrary files)
-const CLOUD_PAGE_PREFIX = 'cloudpptx:'
-const issuedCloudPages = new Set<string>()
+// ── Cloud page generation (local deepseek -> HTML -> html2pptx) ────────────────
+// The silence watchdog aborts a deepseek stream that produces no output for this
+// long (dead connection / hung upstream). Long-but-active generations reset the
+// timer on every delta/activity, so only silence is fatal.
+const CLOUD_PAGE_SILENCE_TIMEOUT_MS = 180_000
+
+const CLOUD_PAGE_DISABLED_ERROR =
+  'cloud slide generation requires a DeepSeek API key (configure in ai-settings.json or env_config.json)'
+
+/**
+ * System prompt for the deepseek HTML generation turn. The format constraints
+ * mirror html2pptx's parser contract (packages/pptx-engine/src/html2pptx.ts):
+ * violations cause element loss, so they are stated explicitly.
+ */
+function CLOUD_PAGE_SYSTEM_PROMPT(width: number, height: number): string {
+  return `You are a professional slide designer generating HTML for a single PowerPoint slide page.
+
+Output format (STRICT - the HTML is parsed by html2pptx, violations cause element loss):
+- Output ONLY one root <div> with inline styles. No <html>/<body>/<head>/<style> tags. No markdown code fences.
+- The root <div> MUST have style="width:${width}px;height:${height}px;overflow:hidden".
+- Text MUST be inside <p>, <h1>-<h6>, <ul>, <ol> tags. <div> is ONLY a container/shape (no direct text).
+- <ul>/<ol> contain <li> items (each <li> text becomes a bulleted paragraph).
+- Fonts: web-safe only (Arial, Helvetica, Georgia, Times New Roman, Courier New, Verdana, Tahoma, Trebuchet MS).
+- Colors: #RRGGBB hex format (e.g. #0B2545, not "blue" or "rgb(11,37,69)").
+- Positioning: use position:absolute with left/top/width/height in px (relative to the root div).
+- Images: <img src="url" style="width:..px;height:..px;position:absolute;left:..px;top:..px">. Use ONLY the URLs provided. Do not invent URLs.
+- Background: set on the root div via style="background-color:#hex".
+
+Layout rules:
+- Vary layouts per page (three-column cards / hero big number / two-column comparison / timeline / full-image overlay / left-text-right-image).
+- Content must not overflow the canvas or overlap unintentionally.
+- Use the full canvas; avoid tiny content in a corner.
+
+Output ONLY the HTML, nothing else.`
+}
+
+/**
+ * User prompt for the cloud-page-generate turn: deck context (page number,
+ * topic, core hook) + Style Skill + the page brief + real image URLs + canvas.
+ */
+function buildCloudPageUserPrompt(
+  op: {
+    brief: string
+    title?: string
+    styleSkill?: string
+    deckContext?: Record<string, unknown>
+    images?: { url: string; caption?: string }[]
+    width?: number
+    height?: number
+  },
+  width: number,
+  height: number,
+): string {
+  const dc = op.deckContext ?? {}
+  const parts: string[] = []
+  if (typeof dc.page_index === 'number' && typeof dc.total_pages === 'number')
+    parts.push(`Page ${dc.page_index} of ${dc.total_pages}`)
+  if (typeof dc.topic === 'string') parts.push(`Topic: ${dc.topic}`)
+  if (typeof dc.core_hook === 'string') parts.push(`Core hook: ${dc.core_hook}`)
+  parts.push('')
+  if (op.styleSkill) parts.push(`Style Skill (follow strictly):\n${op.styleSkill}\n`)
+  if (op.title) parts.push(`Title: ${op.title}`)
+  parts.push(`Brief:\n${op.brief}`)
+  if (op.images?.length) {
+    parts.push('\nImages (real URLs, use in <img src>):')
+    for (const img of op.images) parts.push(`- ${img.url}${img.caption ? ` (${img.caption})` : ''}`)
+  }
+  parts.push(`\nCanvas: ${width} x ${height} px`)
+  return parts.join('\n')
+}
+
+/** Strip a markdown code fence (```html ... ``` or ``` ... ```) around the HTML output. */
+function stripCodeFence(s: string): string {
+  const trimmed = s.trim()
+  const fenceMatch = trimmed.match(/^```(?:html)?\s*\n([\s\S]*?)\n```$/)
+  if (fenceMatch) return fenceMatch[1]!
+  return trimmed
+}
 import { registerPresenterIpc } from './presenter-show'
 import { registerAttachmentIpc } from './attachments-ipc'
 
@@ -1284,11 +1360,15 @@ export function registerSlidesIpc(): void {
     )
     return rebuildSlide(session, op.slideIndex)
   })
-  // ── Cloud single-page generation (gsk slide_generate): brief → cloud HTML+conversion → one-slide
-  // pptx saved to a temp file. Returns a marker string that flows through the same pagesHtml slots
-  // as locally generated HTML; slides:html-to-pptx recognizes it and reads the bytes instead of
-  // converting. Enabled when gsk is logged in; GENOFFICE_CLOUD_SLIDE=0 is the kill switch.
-  const cloudSlideEnabled = () => process.env.GENOFFICE_CLOUD_SLIDE !== '0' && !!gskApiKey()
+  // ── Cloud single-page generation (local): brief → deepseek HTML → html string that flows
+  // through the same pagesHtml slots as any other HTML; slides:html-to-pptx converts it locally
+  // via html2pptx. Enabled when deepseek is configured in ai-settings.json; GENOFFICE_CLOUD_SLIDE=0
+  // is the kill switch.
+  const cloudSlideEnabled = () => {
+    if (process.env.GENOFFICE_CLOUD_SLIDE === '0') return false
+    const s = readAiSettings()
+    return s.provider === 'deepseek' && !!s.providers.deepseek?.apiKey
+  }
 
   ipcMain.handle('slides:cloud-gen-status', () => ({ enabled: cloudSlideEnabled() }))
 
@@ -1305,34 +1385,68 @@ export function registerSlidesIpc(): void {
         width?: number
         height?: number
       },
-    ): Promise<{ ok: boolean; marker?: string; error?: string }> => {
-      if (!cloudSlideEnabled()) return { ok: false, error: 'cloud slide generation is disabled' }
-      try {
-        // ultra = opus-class model, matching the local path's quality tier; GENOFFICE_CLOUD_SLIDE_TIER=standard opts down
-        const tier = process.env.GENOFFICE_CLOUD_SLIDE_TIER === 'standard' ? 'standard' : 'ultra'
-        const started = Date.now()
-        const { bytes, model } = await gskSlideGenerate({
-          tier,
-          brief: String(op.brief ?? ''),
-          title: op.title ? String(op.title) : undefined,
-          styleSkill: op.styleSkill ? String(op.styleSkill) : undefined,
-          deckContext: op.deckContext,
-          images: Array.isArray(op.images) ? op.images : undefined,
-          width: op.width,
-          height: op.height,
-        })
-        console.log(
-          `[cloud-slide] page generated: tier=${tier} model=${model} bytes=${bytes.length} ms=${Date.now() - started}`,
-        )
-        const dir = join(app.getPath('temp'), 'genoffice-cloud-pages')
-        mkdirSync(dir, { recursive: true })
-        const path = join(dir, `${randomUUID()}.pptx`)
-        await writeFile(path, bytes)
-        issuedCloudPages.add(path)
-        return { ok: true, marker: CLOUD_PAGE_PREFIX + path }
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    ): Promise<{ ok: boolean; html?: string; error?: string }> => {
+      if (!cloudSlideEnabled()) return { ok: false, error: CLOUD_PAGE_DISABLED_ERROR }
+      const settings = readAiSettings()
+      // copy: the env model override must not mutate the shared settings object
+      const config = { ...settings.providers.deepseek }
+      if (!config?.apiKey) return { ok: false, error: CLOUD_PAGE_DISABLED_ERROR }
+      // GENOFFICE_CLOUD_SLIDE_MODEL overrides the configured deepseek model (A/B testing without code change)
+      if (process.env.GENOFFICE_CLOUD_SLIDE_MODEL)
+        config.model = process.env.GENOFFICE_CLOUD_SLIDE_MODEL
+
+      const width = op.width ?? 1280
+      const height = op.height ?? 720
+      const system = CLOUD_PAGE_SYSTEM_PROMPT(width, height)
+      const user = buildCloudPageUserPrompt(op, width, height)
+      const maxTokens = 8192
+
+      // Silence watchdog: abort the stream when no output/activity arrives for 180s
+      // (mirrors the ai:stream ping keepalive; a long-but-active generation never trips it).
+      const controller = new AbortController()
+      let buf = ''
+      let silenceTimer: ReturnType<typeof setTimeout> | undefined
+      const armSilence = () => {
+        if (silenceTimer) clearTimeout(silenceTimer)
+        silenceTimer = setTimeout(() => controller.abort(), CLOUD_PAGE_SILENCE_TIMEOUT_MS)
       }
+      try {
+        armSilence()
+        const started = Date.now()
+        await streamForProvider(
+          'deepseek',
+          config,
+          system,
+          [{ role: 'user', text: user }],
+          [],
+          maxTokens,
+          {
+            signal: controller.signal,
+            onDelta: (text) => {
+              buf += text
+              armSilence()
+            },
+            // no tools are passed; the callback is required by StreamCallbacks
+            onToolCall: () => undefined,
+            onActivity: () => armSilence(),
+          },
+        )
+        console.log(
+          `[cloud-slide] page generated: model=${config.model} chars=${buf.length} ms=${Date.now() - started}`,
+        )
+      } catch (err) {
+        if (controller.signal.aborted) {
+          return { ok: false, error: 'cloud page generation timed out (no output for 180s)' }
+        }
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      } finally {
+        if (silenceTimer) clearTimeout(silenceTimer)
+      }
+
+      // Tolerate markdown code fences / trailing chatter from deepseek (modification §7.1)
+      const html = stripCodeFence(buf).trim()
+      if (!html) return { ok: false, error: 'deepseek returned empty HTML' }
+      return { ok: true, html }
     },
   )
 
@@ -1355,24 +1469,42 @@ export function registerSlidesIpc(): void {
         })
       | { error: string }
     > => {
-      // Every page arrives as a cloud marker (cloudpptx:<path> written by
-      // slides:cloud-page-generate, pointing at a one-slide pptx temp file); this handler only
-      // reads and lands the bytes.
+      // Every page arrives as an HTML string (produced by slides:cloud-page-generate via deepseek);
+      // this handler converts each to a one-slide pptx via html2pptx and lands the bytes.
       // replace: assemble the whole batch into one multi-page pptx as the new deck base.
       // append: merge the "new pages" one by one into the existing deck via mergeSlideFromPptx
       // (earlier pages are untouched).
-      const readCloudPage = async (marker: string): Promise<{ bytes: Uint8Array }> => {
-        if (!marker.startsWith(CLOUD_PAGE_PREFIX)) throw new Error('expected a cloud page marker')
-        const path = marker.slice(CLOUD_PAGE_PREFIX.length)
-        if (!issuedCloudPages.has(path)) throw new Error('unknown cloud page marker')
-        return { bytes: new Uint8Array(await readFile(path)) }
+      // Canvas size comes from the HTML's root <div> inline style (html2pptx prefers it over opts);
+      // fitWidthPx is the fallback width, and the 16:9 ratio provides the fallback height.
+      const convertHtmlPage = async (
+        html: string,
+      ): Promise<{ bytes: Uint8Array; imageFailures: { url: string; reason: string }[] }> => {
+        const { bytes, imageFailures } = await html2pptx(html, {
+          width: fitWidthPx,
+          height: Math.round((fitWidthPx * 9) / 16),
+        })
+        return { bytes, imageFailures }
       }
-      const assembleDeck = async (): Promise<{ bytes: Uint8Array }> => {
-        const perPage = await Promise.all(pagesHtml.map(readCloudPage))
+      const assembleDeck = async (): Promise<{
+        bytes: Uint8Array
+        imageFailures: { page: number; url: string }[]
+      }> => {
+        const perPage = await Promise.all(
+          pagesHtml.map(async (html, idx) => {
+            const one = await convertHtmlPage(html)
+            return {
+              bytes: one.bytes,
+              imageFailures: one.imageFailures.map((f) => ({ page: idx, url: f.url })),
+            }
+          }),
+        )
         const base = await openPptx(perPage[0]!.bytes)
         for (const one of perPage.slice(1)) await mergeSlideFromPptx(base, one.bytes)
         for (const s of base.deck.slides) promoteSlideBackground(s, base.deck.size)
-        return { bytes: await savePptx(base) }
+        return {
+          bytes: await savePptx(base),
+          imageFailures: perPage.flatMap((p) => p.imageFailures),
+        }
       }
 
       try {
@@ -1390,11 +1522,13 @@ export function registerSlidesIpc(): void {
           // pre-append state (previously the undoStack was simply cleared, making all of the
           // user's prior manual edits non-undoable — inconsistent with replace_at behavior)
           pushHistory(existing)
+          const imageFailures: { page: number; url: string }[] = []
           let merged = 0
           let lastErr: string | undefined
-          for (const html of pagesHtml) {
+          for (const [idx, html] of pagesHtml.entries()) {
             try {
-              const one = await readCloudPage(html)
+              const one = await convertHtmlPage(html)
+              imageFailures.push(...one.imageFailures.map((f) => ({ page: idx, url: f.url })))
               const slide = await mergeSlideFromPptx(opened, one.bytes)
               if (slide) {
                 promoteSlideBackground(slide, opened.deck.size)
@@ -1425,6 +1559,7 @@ export function registerSlidesIpc(): void {
             size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
             defaultFont: deckDefaultFont(existing.opened),
             appendedFrom: beforeCount,
+            ...(imageFailures.length ? { imageFailures } : {}),
             ...(lastErr && merged < pagesHtml.length
               ? { fallbackReason: tm('errPartialAppend', { reason: lastErr }) }
               : {}),
@@ -1449,7 +1584,8 @@ export function registerSlidesIpc(): void {
           if (!html || pagesHtml.length !== 1) {
             return { error: tm('errReplaceNeedsOne') }
           }
-          const one = await readCloudPage(html)
+          const one = await convertHtmlPage(html)
+          const imageFailures = one.imageFailures.map((f) => ({ page: atIndex, url: f.url }))
           pushHistory(existing)
           const rollback = () => {
             const snap = existing.undoStack.pop()
@@ -1479,6 +1615,7 @@ export function registerSlidesIpc(): void {
             size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
             defaultFont: deckDefaultFont(existing.opened),
             replacedIndex: atIndex,
+            ...(imageFailures.length ? { imageFailures } : {}),
           }
         }
 
@@ -1499,7 +1636,8 @@ export function registerSlidesIpc(): void {
           if (!html || pagesHtml.length !== 1) {
             return { error: tm('errInsertNeedsOne') }
           }
-          const one = await readCloudPage(html)
+          const one = await convertHtmlPage(html)
+          const imageFailures = one.imageFailures.map((f) => ({ page: atIndex, url: f.url }))
           pushHistory(existing)
           const rollback = () => {
             const snap = existing.undoStack.pop()
@@ -1529,11 +1667,12 @@ export function registerSlidesIpc(): void {
             size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
             defaultFont: deckDefaultFont(existing.opened),
             insertedIndex: atIndex,
+            ...(imageFailures.length ? { imageFailures } : {}),
           }
         }
 
         // replace mode: assemble the whole batch into one multi-page pptx as the new deck base.
-        const { bytes } = await assembleDeck()
+        const { bytes, imageFailures } = await assembleDeck()
         const opened = await openPptx(bytes)
         // With per-page conversion + merging, stored PageVisualData is no longer needed; append reads the opened deck directly.
         const replaceSession: Session = {
@@ -1553,6 +1692,7 @@ export function registerSlidesIpc(): void {
           slides: buildAllRenderSlides(opened, fitWidthPx),
           size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
           defaultFont: deckDefaultFont(opened),
+          ...(imageFailures.length ? { imageFailures } : {}),
         }
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) }
