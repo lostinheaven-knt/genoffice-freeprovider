@@ -2198,9 +2198,9 @@ export function registerSheetsAiIpc(): void {
     const { requestId, system, messages } = request
     const tools = request.tools ?? []
     // deepseek-v4-flash is a reasoning model: its thinking chain consumes max_tokens
-      // before content starts; 8192 could be exhausted by the chain alone, leaving
-      // content empty ("no reply"). 100k leaves ample room (verified accepted).
-      const maxTokens = request.maxTokens ?? 100_000
+    // before content starts; 8192 could be exhausted by the chain alone, leaving
+    // content empty ("no reply"). 100k leaves ample room (verified accepted).
+    const maxTokens = request.maxTokens ?? 100_000
     const provider = request.settings.provider as AiProviderId
     let config = request.settings.providers[provider]
     // Genspark's key never enters the settings file; it is read from the gsk
