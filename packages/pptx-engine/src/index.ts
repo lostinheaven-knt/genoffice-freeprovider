@@ -243,6 +243,12 @@ export {
   type TableStylePreset,
 } from './table-edit'
 export { listMasterParts, parseMasterPart, type MasterPartInfo } from './master-edit'
+export {
+  html2pptx,
+  type Html2PptxOptions,
+  type Html2PptxResult,
+  type Html2PptxImageFailure,
+} from './html2pptx'
 
 // The following functions are implemented in this file and exposed directly via
 // export function (see below): editPictureSrcRect, setSlideBackground,
