@@ -423,6 +423,20 @@ export function AiPanel({
   onDeckProgressRef.current = onDeckProgress
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  /** Run-level provider override: image-bearing runs pin the whole loop to kimi
+   *  (history replay carries image_url blocks deepseek rejects). Cleared on loop done/error. */
+  const loopProviderRef = useRef<AiSettings | null>(null)
+  /** Whether the kimi slot (vision-capable generation provider) is configured */
+  const kimiAvailable = (): boolean => !!settingsRef.current.providers.kimi?.apiKey
+  /** Deep copy of the current settings with the generation provider switched to kimi. */
+  const kimiSettings = (): AiSettings => {
+    const cur = settingsRef.current
+    return {
+      ...cur,
+      provider: 'kimi',
+      providers: { ...cur.providers, kimi: { ...cur.providers.kimi } },
+    }
+  }
   const imagesRef = useRef(images)
   imagesRef.current = images
   const attachmentsRef = useRef(attachments)
@@ -605,9 +619,12 @@ export function AiPanel({
     // The three slides generation steps (style/planning/per-page HTML) force the high-quality model (only with the anthropic provider;
     // other providers keep the user setting, avoiding passing nonexistent model names). Chat/fine-tuning still uses the user's configured model.
     const SLIDES_GEN_MODEL = 'claude-opus-4-7'
-    // Return on demand a settings copy with the generation model overridden (deep copy, doesn't pollute settingsRef).
+    // Return on demand a settings copy with the generation provider switched to kimi when
+    // available (Step 0/1 generation), else the SLIDES_GEN_MODEL override (anthropic only),
+    // else the user's config as-is (deep copy, doesn't pollute settingsRef).
     const settingsForGen = (): AiSettings => {
       const cur = settingsRef.current
+      if (kimiAvailable()) return kimiSettings() // Step 0/1 generation: kimi first (user decision)
       if (cur.provider !== 'anthropic') return cur
       const ap = cur.providers.anthropic
       return {
@@ -721,18 +738,20 @@ export function AiPanel({
       signal?: AbortSignal,
       maxTokens?: number,
     ): Promise<LlmResult> => {
-      const first = await runLlmAttempt(
-        useGenModel ? settingsForGen() : settingsRef.current,
-        system,
-        user,
-        timeoutMs,
-        signal,
-        maxTokens,
-      )
+      const gen = useGenModel ? settingsForGen() : settingsRef.current
+      // kimi (Volcano Ark) hard cap is 32768; other providers keep the caller's maxTokens
+      const genMaxTokens = gen.provider === 'kimi' ? 32_768 : maxTokens
+      const first = await runLlmAttempt(gen, system, user, timeoutMs, signal, genMaxTokens)
       if (first.ok || !useGenModel || signal?.aborted) return first
       // Only "request errors" fall back to the user's model for a retry; timeouts/empty output don't switch models (mostly network/output problems, switching won't help)
       if (first.errKind) return first
       const cur = settingsRef.current
+      // kimi attempt failed with a request error -> retry once with the user's (deepseek) config
+      if (gen.provider === 'kimi') {
+        if (cur.provider === 'kimi') return first // nothing to fall back to
+        return runLlmAttempt(cur, system, user, timeoutMs, signal, undefined)
+      }
+      // anthropic gen-model override ladder (existing behavior, unchanged)
       if (cur.provider !== 'anthropic') return first // The gen-model override only applies with anthropic
       if (cur.providers.anthropic?.model === SLIDES_GEN_MODEL) return first
       return runLlmAttempt(cur, system, user, timeoutMs, signal, maxTokens)
@@ -1067,7 +1086,7 @@ export function AiPanel({
     }
     accessRef.current = access
     loopRef.current = new AgentLoop({
-      transport: createElectronTransport(() => settingsRef.current),
+      transport: createElectronTransport(() => loopProviderRef.current ?? settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
         createSlidesSkill(access),
@@ -1123,6 +1142,7 @@ export function AiPanel({
           setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
         },
         onDone: ({ text, cancelled, turnLimit }) => {
+          loopProviderRef.current = null
           const finalText = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStoppedNote') : '')
@@ -1160,6 +1180,7 @@ export function AiPanel({
           }
         },
         onError: (error) => {
+          loopProviderRef.current = null
           qcPagesRef.current = []
           setChat((prev) => {
             const next = [...prev]
@@ -1267,10 +1288,10 @@ export function AiPanel({
   const MAX_IMAGES_PER_MESSAGE = 20
   const collectImageAttachments = async (): Promise<AgentImage[]> => {
     const imageAtts = attachmentsRef.current.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
-    // deepseek chat.completions rejects image_url blocks - image attachments can't be sent
-    if (settingsRef.current.provider === 'deepseek' && imageAtts.length > 0) {
+    // deepseek chat.completions rejects image_url blocks - image attachments need the kimi slot
+    if (!kimiAvailable() && imageAtts.length > 0) {
       setAttachNotice(
-        'Current provider (deepseek) does not support image attachments; the images were skipped.',
+        'Vision provider (kimi) is not configured; the images were skipped. Configure a Kimi API key to enable image attachments.',
       )
       window.setTimeout(() => setAttachNotice(null), 5000)
       return []
@@ -1341,18 +1362,21 @@ export function AiPanel({
         // the note rides on the model instruction only — the chat bubble stays the localized preset text
         let modelInstruction = instruction
         if (opts?.slideShot) {
-          // deepseek chat.completions rejects image_url content blocks (no vision support);
-          // skip the screenshot for it and let the model work from text-only context
-          if (settingsRef.current.provider !== 'deepseek') {
+          // Vision features need the kimi slot (deepseek chat.completions rejects image_url
+          // content blocks); without it, fall back to text-only context with a note
+          if (kimiAvailable()) {
             const shot = await captureSlideShot(currentRef.current)
             if (shot) {
               images.push(shot)
               modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
             }
           } else {
-            modelInstruction += `\n\n(Note: the current provider (deepseek) does not support image input, so the slide screenshot was not attached. Rely on the element inventory and your knowledge of the design when making changes.)`
+            modelInstruction += `\n\n(Note: the vision provider (kimi) is not configured, so the slide screenshot was not attached. Rely on the element inventory and your knowledge of the design when making changes.)`
           }
         }
+        // Image-bearing runs must stay on kimi for the whole run: multi-turn history replay
+        // carries image_url blocks that a switch back to deepseek would reject (decision 4)
+        if (images.length > 0 && kimiAvailable()) loopProviderRef.current = kimiSettings()
         // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
         runStartingRef.current = false
         if (await window.slidesApi.beginHistoryBatch()) historyBatchActiveRef.current = true
@@ -1360,6 +1384,7 @@ export function AiPanel({
       })
       .catch(() => {
         runStartingRef.current = false
+        loopProviderRef.current = null
         void finishHistoryBatch().finally(() => setBusy(false))
       })
   }
@@ -1375,13 +1400,14 @@ export function AiPanel({
     qcPagesRef.current = []
     const access = accessRef.current
     if (pages.length === 0 || !access || qcRunningRef.current || !isQcEnabled()) return
-    // deepseek chat.completions has no vision - the screenshot-based QC pass can't run
-    if (settingsRef.current.provider === 'deepseek') return
+    // The screenshot-based QC pass needs vision (image_url); only the kimi slot provides it
+    if (!kimiAvailable()) return
     qcRunningRef.current = true
     const controller = new AbortController()
     qcAbortRef.current = controller
     const capped = pages.slice(0, QC_MAX_PAGES)
-    const transport = createElectronTransport(() => settingsRef.current)
+    // Entry already gated on kimi availability: the whole pass runs on kimi settings
+    const transport = createElectronTransport(() => kimiSettings())
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
     const renderEntry = () => [header, ...lines].join('\n')
