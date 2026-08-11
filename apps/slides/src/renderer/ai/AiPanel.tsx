@@ -1269,7 +1269,9 @@ export function AiPanel({
     const imageAtts = attachmentsRef.current.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
     // deepseek chat.completions rejects image_url blocks - image attachments can't be sent
     if (settingsRef.current.provider === 'deepseek' && imageAtts.length > 0) {
-      setAttachNotice('Current provider (deepseek) does not support image attachments; the images were skipped.')
+      setAttachNotice(
+        'Current provider (deepseek) does not support image attachments; the images were skipped.',
+      )
       window.setTimeout(() => setAttachNotice(null), 5000)
       return []
     }
