@@ -300,6 +300,7 @@ const STYLES_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.sprea
 async function addDefaultStylesheet(
   pkg: PackageEditor,
   touchedEntries: Set<string>,
+  addedSheetRelationshipIds: ReadonlyArray<number> = [],
 ): Promise<void> {
   const stylesPath = 'xl/styles.xml'
   pkg.add(stylesPath, DEFAULT_STYLESHEET_XML)
@@ -308,9 +309,14 @@ async function addDefaultStylesheet(
   const relationshipsPath = 'xl/_rels/workbook.xml.rels'
   const relationships = await pkg.readText(relationshipsPath)
   if (!relationships.includes(`Type="${STYLES_REL_TYPE}"`)) {
+    // allocateAddedSheets assigns relationshipIds before this runs (based on the
+    // pre-styles rels), so max+1 can collide with a pending sheet rId - skip any
+    // id already allocated for an added sheet.
+    const reserved = new Set(addedSheetRelationshipIds)
+    let nextId = maxRelationshipId(relationships) + 1
+    while (reserved.has(nextId)) nextId += 1
     const relationship =
-      `<Relationship Id="rId${maxRelationshipId(relationships) + 1}" ` +
-      `Type="${STYLES_REL_TYPE}" Target="styles.xml"/>`
+      `<Relationship Id="rId${nextId}" ` + `Type="${STYLES_REL_TYPE}" Target="styles.xml"/>`
     pkg.write(
       relationshipsPath,
       relationships.replace('</Relationships>', `${relationship}</Relationships>`),
@@ -742,10 +748,15 @@ export async function planCellEditsToXlsx(
   let workbookXml = originalWorkbookXml
   for (const { sheetName, ops } of structuralOps) {
     if (ops.length === 0) continue
-    worksheetXmls.set(
-      sheetName,
-      applyStructuralOps(worksheetXmls.get(sheetName) ?? '', ops, sheetName),
-    )
+    // [DEBUG-h2p] diagnostic: log which sheet + ops hit an XML without sheetData
+    const targetXml = worksheetXmls.get(sheetName) ?? ''
+    if (!targetXml.includes('</sheetData>') && !/<sheetData\s*\/>/.test(targetXml)) {
+      console.error(
+        `[DEBUG-h2p] applyStructuralOps on sheet "${sheetName}" with NO sheetData ` +
+          `ops=[${ops.map((o) => o.kind).join(',')}] xmlHead=${JSON.stringify(targetXml.slice(0, 200))}`,
+      )
+    }
+    worksheetXmls.set(sheetName, applyStructuralOps(targetXml, ops, sheetName))
     const editedPath = worksheetPaths.get(sheetName)
     if (editedPath !== undefined) {
       await shiftAnchoredSheetParts(
@@ -808,7 +819,15 @@ export async function planCellEditsToXlsx(
   let stylesheet: StylesheetEditor | null = null
   const stylesPath = 'xl/styles.xml'
   if (edits.some((edit) => edit.style !== undefined) || cfStates.length > 0) {
-    if (!(await pkg.has(stylesPath))) await addDefaultStylesheet(pkg, touchedEntries)
+    if (!(await pkg.has(stylesPath)))
+      await addDefaultStylesheet(
+        pkg,
+        touchedEntries,
+        additions.map((addition) => {
+          const idMatch = /^rId([0-9]+)$/.exec(addition.relationshipId)
+          return idMatch ? Number(idMatch[1]) : 0
+        }),
+      )
     stylesheet = new StylesheetEditor(await pkg.readText(stylesPath))
   }
   for (const [sheetName, sheetEdits] of editsBySheet) {
@@ -1476,8 +1495,11 @@ async function resolveWorksheetPath(
   const relationshipsXml = await reader.readText('xl/_rels/workbook.xml.rels')
   // Two-step lookup: attribute order varies by producer (openpyxl puts
   // Target before Id), so never assume Id precedes Target.
+  // Match the worksheet-typed relationship even when the Id is duplicated in a
+  // corrupted rels (e.g. a styles entry reusing a sheet's rId) - falling back to
+  // the first Id match would resolve to styles.xml and break every save.
   const relationshipXml = new RegExp(
-    `<Relationship\\b[^>]*\\bId="${escapeRegExp(relationshipId)}"[^>]*/?>`,
+    `<Relationship\\b[^>]*\\bId="${escapeRegExp(relationshipId)}"[^>]*\\bType="[^"]*worksheet[^"]*"[^>]*/?>`,
   ).exec(relationshipsXml)?.[0]
   const targetMatch =
     relationshipXml === undefined ? undefined : /\bTarget="([^"]+)"/.exec(relationshipXml)?.[1]
@@ -1656,6 +1678,11 @@ function insertRowInOrder(worksheetXml: string, rowNumber: number, cellXml: stri
   if (emptySheetData.test(worksheetXml)) {
     return worksheetXml.replace(emptySheetData, () => `<sheetData>${newRow}</sheetData>`)
   }
+  // [DEBUG-h2p] diagnostic: which worksheet hit the no-sheetData case in the cell-edit path
+  console.error(
+    `[DEBUG-h2p] insertRowInOrder: worksheet has no sheetData (row=${rowNumber} ` +
+      `xmlLen=${worksheetXml.length} xmlHead=${JSON.stringify(worksheetXml.slice(0, 200))})`,
+  )
   throw new Error('Worksheet has no sheetData element.')
 }
 
