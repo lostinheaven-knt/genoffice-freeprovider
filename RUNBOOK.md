@@ -146,11 +146,11 @@ Linux: `~/.config/<appName>/ai-settings.json`
 # 全部 4 个编辑器 + shell（占用大）
 npm run dev
 
-# 单跑一个 app
-npm run dev:docs      # 文档编辑器
-npm run dev:sheets    # 表格（需 Rust）
-npm run dev:slides    # 幻灯片
-npm run dev:pdf       # PDF
+# 单跑一个 app（仅 dev:docs 是根脚本别名；sheets/slides/pdf 用 -w 形式）
+npm run dev:docs                      # 文档编辑器（根脚本别名，= npm run dev -w @genoffice/docs）
+npm run dev -w @genoffice/sheets      # 表格（需 Rust）
+npm run dev -w @genoffice/slides      # 幻灯片
+npm run dev -w @genoffice/pdf         # PDF
 ```
 
 dev 模式下 Vite dev server + Electron，支持热更新。首次启动会触发 ai-settings.json 自举。
