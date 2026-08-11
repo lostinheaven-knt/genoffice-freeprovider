@@ -16,6 +16,7 @@ GenOffice 是一个桌面端 office 套件（docs / sheets / slides / pdf / shel
 - 保留 genspark key 注入分支与 gsk handler 为休眠代码，未来切回 genspark 无需改代码
 - **slides 的 cloud generation（精美页面生成）从 gsk 云端 `slide_generate` 改为完全本地**：deepseek 生成 HTML + 本地 `html2pptx` 模块转 pptx，不再依赖 gsk 登录（详见 §11.4）
 - 新增 `packages/pptx-engine/src/html2pptx.ts`：HTML -> 单页 pptx 转换模块（pptxgenjs + cheerio），支持 p/h1-6/ul/ol/div/img + CSS absolute 定位
+- **slides 生成引擎 kimi-k2.7-code**（Phase 3）：slides 的 HTML 生成 + 视觉功能（AI Beautify / QC pass / 图片附件）用 kimi-k2.7-code（火山引擎方舟，支持 vision），deepseek 兜底；对话文本保持 deepseek
 
 **DeepSeek 配置**：通过项目根 `env_config.json` 提供 API key + model，首次启动自举固化到 `ai-settings.json`。
 
@@ -60,8 +61,11 @@ npm run fixtures
 ```json
 {
     "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
-    "DEEPSEEK_API_KEY": "sk-your-real-key",
-    "DEEPSEEK_MODEL": "deepseek-v4-flash"
+    "DEEPSEEK_API_KEY": "sk-your-deepseek-key",
+    "DEEPSEEK_MODEL": "deepseek-v4-flash",
+    "KIMI_BASE_URL": "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "KIMI_API_KEY": "your-volcano-ark-key",
+    "KIMI_MODEL": "kimi-k2.7-code"
 }
 ```
 
@@ -506,24 +510,28 @@ npm run dist:linux  # Linux deb/AppImage
 
 ```
 用户说"生成 PPT" -> generate_deck（slides-skill.ts）
-  -> Step 0/1/1.5: Style Skill / outline 规划 / 图片搜索（本地 provider / Serper）
-  -> Step 2: 每页 cloud-page-generate IPC（slides-main.ts:1376）
-    -> deepseek 流式生成 HTML（CLOUD_PAGE_SYSTEM_PROMPT 强约束 html2pptx 格式）
+  -> Step 0/1/1.5: Style Skill / outline 规划 / 图片搜索（kimi 优先 / Serper）
+  -> Step 2: 每页 cloud-page-generate IPC（slides-main.ts:1377）
+    -> provider 选择：providers.kimi.apiKey 非空 → kimi；否则 deepseek
+    -> kimi 失败（API 错误/超时/空 HTML）→ deepseek 回退重试一次
+    -> 流式生成 HTML（CLOUD_PAGE_SYSTEM_PROMPT 强约束 html2pptx 格式）
     -> stripCodeFence -> { ok: true, html }
   -> html-to-pptx IPC（slides-main.ts:1454）
     -> convertHtmlPage: html2pptx（packages/pptx-engine/src/html2pptx.ts）
     -> mergeSlideFromPptx 合并进 deck + promoteSlideBackground
-  -> 生成后 QC pass（slide-qc.ts，本地 provider）
+  -> 生成后 QC pass（slide-qc.ts，kimi transport，支持视觉）
 ```
 
-**启用条件**：`cloudSlideEnabled()`（slides-main.ts:1367）= ai-settings.json 的 `provider === 'deepseek'` 且 `providers.deepseek.apiKey` 非空。
+**启用条件**：`cloudSlideEnabled()`（slides-main.ts:1369）= ai-settings.json 的 `providers.kimi?.apiKey` 或 `providers.deepseek?.apiKey` 任一非空（与对话 provider 解耦）。
 
 **环境变量**：
 - `GENOFFICE_CLOUD_SLIDE=0`：kill switch，禁用 cloud generation
-- `GENOFFICE_CLOUD_SLIDE_MODEL=<model>`：覆盖生成模型（如 `deepseek-reasoner`，A/B 测试用）
-- `GENOFFICE_CLOUD_SLIDE_TIER`：已失效（gsk 时代概念，无读取点）
+- `GENOFFICE_CLOUD_SLIDE_MODEL=<model>`：覆盖**当前生效生成 provider** 的模型（kimi 优先时覆盖 kimi.model，A/B 测试用）
+- `KIMI_BASE_URL` / `KIMI_API_KEY` / `KIMI_MODEL`：kimi 凭据（env var > env_config.json > 默认），首次启动自举进 `providers.kimi`
 
-**HTML 格式约束**（html2pptx 要求，deepseek system prompt 已约束）：
+**视觉功能**（AI Beautify / QC pass / 图片附件）：kimi 可用时用 kimi（支持 image_url）；无 kimi 配置时降级文本（AI Beautify 无截图 / QC 禁用 / 图片附件跳过）。
+
+**HTML 格式约束**（html2pptx 要求，生成 prompt 已约束）：
 - 文本必须在 `<p>`/`<h1>`-`<h6>`/`<ul>`/`<ol>` 里，`<div>` 只做容器/shape（不带直接文本）
 - 字体：web-safe（Arial/Helvetica/Georgia/Times New Roman/Courier New/Verdana/Tahoma/Trebuchet MS）
 - 颜色：`#RRGGBB` hex 格式
@@ -602,6 +610,7 @@ f7af8a4 feat(ai-provider): switch default provider to deepseek
 | 无 provider 选择 UI | 本仓库不加 UI（决策 7），换 provider 需编辑 ai-settings.json。|
 | `env_config.json` 不进 git | 含 key，已 gitignore。`env_config.example.json` 是模板。|
 | slides cloud generation 质量 | 精美页面由 deepseek 生成 HTML + 本地 html2pptx 转 pptx（html2pptx.ts）。主观质量可能低于 gsk 专有管线（已知风险，人工评估项）。布局约束 position:absolute（flexbox 不支持）。质量不足时用 `GENOFFICE_CLOUD_SLIDE_MODEL=deepseek-reasoner` 切换模型测试。|
+| slides 生成引擎 kimi | slides 的 HTML 生成 + 视觉功能用 kimi-k2.7-code（火山引擎方舟），deepseek 兜底（kimi 失败自动回退）。**kimi max_tokens 上限 32768**（deepseek 100000），引擎已按 provider 动态设置。无 kimi 配置时视觉功能降级文本（AI Beautify 无截图 / QC 禁用 / 图片附件跳过）。|
 
 ---
 
