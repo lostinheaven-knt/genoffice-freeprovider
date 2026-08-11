@@ -25,7 +25,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setGskProxyUrl } from '@genoffice/ai-search'
-import { streamForProvider } from '@genoffice/ai-provider'
+import { streamForProvider, type AiProviderConfig } from '@genoffice/ai-provider'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -256,19 +256,20 @@ let slideClipboard: { bundle: SlideBundle; png?: string } | null = null
 /** The immediately preceding slide paste per webContents, so the paste-options floater can redo it with another mode. */
 const lastSlidePaste = new Map<number, { afterIndex: number; undoLen: number }>()
 
-// ── Cloud page generation (local deepseek -> HTML -> html2pptx) ────────────────
-// The silence watchdog aborts a deepseek stream that produces no output for this
+// ── Cloud page generation (local kimi/deepseek -> HTML -> html2pptx) ───────────
+// The silence watchdog aborts a generation stream that produces no output for this
 // long (dead connection / hung upstream). Long-but-active generations reset the
 // timer on every delta/activity, so only silence is fatal.
 const CLOUD_PAGE_SILENCE_TIMEOUT_MS = 180_000
 
 const CLOUD_PAGE_DISABLED_ERROR =
-  'cloud slide generation requires a DeepSeek API key (configure in ai-settings.json or env_config.json)'
+  'cloud slide generation requires a Kimi or DeepSeek API key (configure in ai-settings.json or env_config.json)'
 
 /**
- * System prompt for the deepseek HTML generation turn. The format constraints
- * mirror html2pptx's parser contract (packages/pptx-engine/src/html2pptx.ts):
- * violations cause element loss, so they are stated explicitly.
+ * System prompt for the cloud HTML generation turn (provider-agnostic: used for
+ * both the kimi and deepseek attempts). The format constraints mirror html2pptx's
+ * parser contract (packages/pptx-engine/src/html2pptx.ts): violations cause
+ * element loss, so they are stated explicitly.
  */
 function CLOUD_PAGE_SYSTEM_PROMPT(width: number, height: number): string {
   return `You are a professional slide designer generating HTML for a single PowerPoint slide page.
@@ -1388,70 +1389,83 @@ export function registerSlidesIpc(): void {
     ): Promise<{ ok: boolean; html?: string; error?: string }> => {
       if (!cloudSlideEnabled()) return { ok: false, error: CLOUD_PAGE_DISABLED_ERROR }
       const settings = readAiSettings()
-      // copy: the env model override must not mutate the shared settings object
-      const config = { ...settings.providers.deepseek }
-      if (!config?.apiKey) return { ok: false, error: CLOUD_PAGE_DISABLED_ERROR }
-      // GENOFFICE_CLOUD_SLIDE_MODEL overrides the configured deepseek model (A/B testing without code change)
-      if (process.env.GENOFFICE_CLOUD_SLIDE_MODEL)
-        config.model = process.env.GENOFFICE_CLOUD_SLIDE_MODEL
+      // Generation provider order: kimi (primary) -> deepseek (fallback). Derived from
+      // slot availability, not from the provider field (which stays the dialog provider).
+      const attempts: Array<{ provider: 'kimi' | 'deepseek'; config: AiProviderConfig }> = []
+      if (settings.providers.kimi?.apiKey)
+        attempts.push({ provider: 'kimi', config: { ...settings.providers.kimi } })
+      if (settings.providers.deepseek?.apiKey)
+        attempts.push({ provider: 'deepseek', config: { ...settings.providers.deepseek } })
+      if (attempts.length === 0) return { ok: false, error: CLOUD_PAGE_DISABLED_ERROR }
 
       const width = op.width ?? 1280
       const height = op.height ?? 720
       const system = CLOUD_PAGE_SYSTEM_PROMPT(width, height)
       const user = buildCloudPageUserPrompt(op, width, height)
-      // deepseek-v4-flash is a reasoning model: its thinking chain (reasoning_content)
-      // consumes max_tokens before content starts. With 8192 the chain alone could
-      // exhaust the budget and content came back empty (cloud-page-generate returned
-      // { ok:false, 'deepseek returned empty HTML' }). 100k leaves ample room for the
-      // thinking chain + the page HTML (verified accepted by the API).
-      const maxTokens = 100_000
 
-      // Silence watchdog: abort the stream when no output/activity arrives for 180s
-      // (mirrors the ai:stream ping keepalive; a long-but-active generation never trips it).
-      const controller = new AbortController()
-      let buf = ''
-      let silenceTimer: ReturnType<typeof setTimeout> | undefined
-      const armSilence = () => {
-        if (silenceTimer) clearTimeout(silenceTimer)
-        silenceTimer = setTimeout(() => controller.abort(), CLOUD_PAGE_SILENCE_TIMEOUT_MS)
-      }
-      try {
-        armSilence()
-        const started = Date.now()
-        await streamForProvider(
-          'deepseek',
-          config,
-          system,
-          [{ role: 'user', text: user }],
-          [],
-          maxTokens,
-          {
-            signal: controller.signal,
-            onDelta: (text) => {
-              buf += text
-              armSilence()
-            },
-            // no tools are passed; the callback is required by StreamCallbacks
-            onToolCall: () => undefined,
-            onActivity: () => armSilence(),
-          },
-        )
-        console.log(
-          `[cloud-slide] page generated: model=${config.model} chars=${buf.length} ms=${Date.now() - started}`,
-        )
-      } catch (err) {
-        if (controller.signal.aborted) {
-          return { ok: false, error: 'cloud page generation timed out (no output for 180s)' }
+      const errors: string[] = []
+      for (const { provider, config } of attempts) {
+        // GENOFFICE_CLOUD_SLIDE_MODEL overrides the model of whichever provider is being
+        // attempted (kimi-first: it overrides kimi.model while kimi is the primary slot).
+        if (process.env.GENOFFICE_CLOUD_SLIDE_MODEL)
+          config.model = process.env.GENOFFICE_CLOUD_SLIDE_MODEL
+        // maxTokens by provider: kimi hard cap 32768 (verified; 100000/64000 rejected by
+        // the ark endpoint). deepseek-v4-flash is a reasoning model: its thinking chain
+        // (reasoning_content) consumes max_tokens before content starts; 100k leaves
+        // ample room for the chain + the page HTML (verified accepted by the API).
+        const maxTokens = provider === 'kimi' ? 32_768 : 100_000
+
+        // Silence watchdog: abort the stream when no output/activity arrives for 180s
+        // (mirrors the ai:stream ping keepalive; a long-but-active generation never trips
+        // it). Armed per attempt, so each fallback provider gets its own full window.
+        const controller = new AbortController()
+        let buf = ''
+        let silenceTimer: ReturnType<typeof setTimeout> | undefined
+        const armSilence = () => {
+          if (silenceTimer) clearTimeout(silenceTimer)
+          silenceTimer = setTimeout(() => controller.abort(), CLOUD_PAGE_SILENCE_TIMEOUT_MS)
         }
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
-      } finally {
-        if (silenceTimer) clearTimeout(silenceTimer)
-      }
+        try {
+          armSilence()
+          const started = Date.now()
+          await streamForProvider(
+            provider,
+            config,
+            system,
+            [{ role: 'user', text: user }],
+            [],
+            maxTokens,
+            {
+              signal: controller.signal,
+              onDelta: (text) => {
+                buf += text
+                armSilence()
+              },
+              // no tools are passed; the callback is required by StreamCallbacks
+              onToolCall: () => undefined,
+              onActivity: () => armSilence(),
+            },
+          )
+          console.log(
+            `[cloud-slide] page generated: provider=${provider} model=${config.model} chars=${buf.length} ms=${Date.now() - started}`,
+          )
+        } catch (err) {
+          if (controller.signal.aborted) {
+            errors.push(`${provider}: cloud page generation timed out (no output for 180s)`)
+          } else {
+            errors.push(`${provider}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          continue // fall back to the next provider, or fail after the last attempt
+        } finally {
+          if (silenceTimer) clearTimeout(silenceTimer)
+        }
 
-      // Tolerate markdown code fences / trailing chatter from deepseek (modification §7.1)
-      const html = stripCodeFence(buf).trim()
-      if (!html) return { ok: false, error: 'deepseek returned empty HTML' }
-      return { ok: true, html }
+        // Tolerate markdown code fences / trailing chatter from the model (§7.1)
+        const html = stripCodeFence(buf).trim()
+        if (html) return { ok: true, html }
+        errors.push(`${provider}: returned empty HTML`)
+      }
+      return { ok: false, error: errors.join('; ') }
     },
   )
 
