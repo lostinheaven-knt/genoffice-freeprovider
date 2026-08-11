@@ -1267,6 +1267,12 @@ export function AiPanel({
   const MAX_IMAGES_PER_MESSAGE = 20
   const collectImageAttachments = async (): Promise<AgentImage[]> => {
     const imageAtts = attachmentsRef.current.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
+    // deepseek chat.completions rejects image_url blocks - image attachments can't be sent
+    if (settingsRef.current.provider === 'deepseek' && imageAtts.length > 0) {
+      setAttachNotice('Current provider (deepseek) does not support image attachments; the images were skipped.')
+      window.setTimeout(() => setAttachNotice(null), 5000)
+      return []
+    }
     const images: AgentImage[] = []
     const failures: string[] = []
     for (const att of imageAtts.slice(0, MAX_IMAGES_PER_MESSAGE)) {
@@ -1333,10 +1339,16 @@ export function AiPanel({
         // the note rides on the model instruction only — the chat bubble stays the localized preset text
         let modelInstruction = instruction
         if (opts?.slideShot) {
-          const shot = await captureSlideShot(currentRef.current)
-          if (shot) {
-            images.push(shot)
-            modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
+          // deepseek chat.completions rejects image_url content blocks (no vision support);
+          // skip the screenshot for it and let the model work from text-only context
+          if (settingsRef.current.provider !== 'deepseek') {
+            const shot = await captureSlideShot(currentRef.current)
+            if (shot) {
+              images.push(shot)
+              modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
+            }
+          } else {
+            modelInstruction += `\n\n(Note: the current provider (deepseek) does not support image input, so the slide screenshot was not attached. Rely on the element inventory and your knowledge of the design when making changes.)`
           }
         }
         // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
@@ -1361,6 +1373,8 @@ export function AiPanel({
     qcPagesRef.current = []
     const access = accessRef.current
     if (pages.length === 0 || !access || qcRunningRef.current || !isQcEnabled()) return
+    // deepseek chat.completions has no vision - the screenshot-based QC pass can't run
+    if (settingsRef.current.provider === 'deepseek') return
     qcRunningRef.current = true
     const controller = new AbortController()
     qcAbortRef.current = controller
