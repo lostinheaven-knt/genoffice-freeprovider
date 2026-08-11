@@ -1013,9 +1013,9 @@ export interface SlidesApi {
       })
     | { error: string }
   >
-  /** Whether cloud single-page generation is available (GENOFFICE_CLOUD_SLIDE=1 + deepseek configured in ai-settings.json) */
+  /** Whether cloud single-page generation is available (GENOFFICE_CLOUD_SLIDE=1 + kimi or deepseek configured in ai-settings.json) */
   cloudGenStatus: () => Promise<{ enabled: boolean }>
-  /** Cloud single-page generation: brief → HTML generated locally via deepseek; the html goes into an htmlToPptx pagesHtml slot */
+  /** Cloud single-page generation: brief → HTML generated locally (kimi, falling back to deepseek); the html goes into an htmlToPptx pagesHtml slot */
   cloudGeneratePage: (op: {
     brief: string
     title?: string

@@ -106,12 +106,13 @@ export interface DeckAccess {
    * On search failure returns an empty array (fail-open; doesn't block the main generation path).
    */
   searchImages?(query: string, maxResults: number): Promise<string[]>
-  /** Whether cloud single-page generation is available (kill switch + deepseek config in ai-settings.json) */
+  /** Whether cloud single-page generation is available (kill switch + kimi or deepseek config in ai-settings.json) */
   isCloudPageGenEnabled?(): Promise<boolean>
   /**
    * Cloud single-page generation, used by generate_deck's self-driven
    * pipeline: given the unified style + this page's brief/layout/images, the system generates
-   * the HTML locally (deepseek) and converts it to a one-slide pptx. Returns an HTML string
+   * the HTML locally (kimi, falling back to deepseek) and converts it to a one-slide pptx.
+   * Returns an HTML string
    * that goes into a generateFromHtml pagesHtml slot.
    */
   generatePageCloud?(args: {
@@ -211,7 +212,7 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside GenOffice Slides (a
 ## Most important tool-selection principles (judge the scenario before acting)
 - **Creating a whole new deck (from scratch)** → first gather material (web_search) and images (image_search), then call **generate_deck**. With many pages, prefer **passing topic + approx_pages + context (the real material you found)** and let the system plan internally + generate page by page + display page by page (**you don't hand-write dozens of pages, and no pages get missed / arguments truncated**). For few pages where you already know each page, you may pass core_hook+style+pages directly.
 - **Adding 1 page or a few pages to an existing deck** → generate_deck(pages: briefs for just the new pages, insert_mode:"append"). Write each page's brief in detail (real content/data per region + layout); first look at the existing pages (get_deck_context) and pass a style description matching them so new pages stay consistent. **Even a single new page goes through this HTML generation pipeline; don't fall back to native tools and build a crude page**.
-- **Redoing / redesigning an existing page** (user says "redo this page / redesign it / try another layout / make it prettier") → **regenerate_slide**: first read_slide to get the page's original copy, then pass a detailed brief (copy the text/data to keep into the brief verbatim, state what to change and the target layout); the system regenerates the page in place (local HTML generation via deepseek + conversion to editable elements; other pages untouched). Don't dismantle and rebuild the whole page element by element with native tools.
+- **Redoing / redesigning an existing page** (user says "redo this page / redesign it / try another layout / make it prettier") → **regenerate_slide**: first read_slide to get the page's original copy, then pass a detailed brief (copy the text/data to keep into the brief verbatim, state what to change and the target layout); the system regenerates the page in place (local HTML generation via kimi, falling back to deepseek; conversion to editable elements; other pages untouched). Don't dismantle and rebuild the whole page element by element with native tools.
 - **Deleting a page** → delete_slide(slideIndex).
 - **Modifying / fine-tuning existing elements** (position/size/alignment/distribution/relative nudges/text/style/fill/stroke, one or many elements) → always prefer **execute_slide_script** and do it in one script (see "Editing existing elements" below; read-write combined, no read_slide first). Don't blind-fire individual set_element_* calls. Add/delete elements with add_* / delete_element; redo a whole page with regenerate_slide.
 - **Elements inside a group**: direct children of a top-level group (marked "in group <id>" / els groupId) are edited exactly like normal elements — same script primitives and set_element_* tools, absolute coordinates. Only elements nested in a sub-group are read-only: call ungroup_element on the outer group first (ids on the page change afterwards; the result returns the fresh list). To delete a single group member, ungroup first too.
@@ -249,7 +250,7 @@ Step 0 Questionnaire (mandatory when creating a whole new deck): first call ask_
 Step A Research: when the topic involves facts/attractions/data, run web_search 1–2 times first for real content. **Use real data and facts in the design; no "XX%" or placeholder names**.
 Step B Image strategy: with generate_deck you **don't need image_search in advance** — the system auto-searches internally per page from the planned image_queries keywords and fills real URLs back (each keyword searched once, deduped across pages). **Travel/product/people/brand decks get images by default without the user asking; never fake images with CSS placeholders — slots needing images must be filled with real ones**. Only when redoing a page via regenerate_slide or adding images to existing pages via insert_web_image do you image_search yourself first (English keywords describing a concrete scene like "summer palace kunming lake", not generic words like "park").
 Step C Unified style: first define one design system for the whole deck — primary/secondary colors, title and body font-size scale, content margins, card/corner style (e.g. "teal primary + cream background + sans-serif fresh look"). **Every page's HTML strictly follows the same system; style must be consistent across pages**.
-Step D Generate (call generate_deck): with many pages pass topic + approx_pages + context (feed in the real material from Step A) and let the system plan internally; with few pages you may pass core_hook+style+pages directly (image_queries takes English image-search keywords; **the system auto-searches internally and fills real URLs back**, no image_search needed in advance). The system generates HTML page by page (locally via deepseek), converts each to editable elements, and lands pages as they generate; you don't hand-write HTML.
+Step D Generate (call generate_deck): with many pages pass topic + approx_pages + context (feed in the real material from Step A) and let the system plan internally; with few pages you may pass core_hook+style+pages directly (image_queries takes English image-search keywords; **the system auto-searches internally and fills real URLs back**, no image_search needed in advance). The system generates HTML page by page (locally via kimi, falling back to deepseek), converts each to editable elements, and lands pages as they generate; you don't hand-write HTML.
 Step E Vary layouts per page (avoid sameness): 3 parallel points→three-column cards; a key number→big-number hero; comparison→two columns; sequence→timeline; image+text→left-text-right-image / full-image with text overlay. **Content pages of one deck must not all use the same layout**.
 
 - **generate_deck is the first choice for a whole new deck**: with many pages pass topic+approx_pages+context; the system plans internally (auto-batching over the threshold), **auto-searches images**, writes HTML page by page, and **lands pages onto the canvas as they generate (the user sees them one by one)**. **Neither "only page 1 got generated" nor "arguments were truncated" can happen — the page count is guaranteed by the system loop**.
@@ -653,12 +654,12 @@ const TOOLS: AgentToolDef[] = [
   {
     name: 'regenerate_slide',
     description:
-      '[Redo/redesign an existing page] The system regenerates the page from your brief (local HTML generation via deepseek + conversion to editable elements) and replaces it in place (other pages untouched, undoable).' +
+      '[Redo/redesign an existing page] The system regenerates the page from your brief (local HTML generation via kimi, falling back to deepseek; conversion to editable elements) and replaces it in place (other pages untouched, undoable).' +
       ' Use when the user says "redo this page / redesign it / try another layout / make it prettier"; don\'t dismantle the page element by element with native tools.' +
       " Flow: first read_slide to get the page's current content, then check neighboring pages / get_deck_context to grasp the deck's style;" +
       ' write a detailed brief — what to keep (copy real text/data into the brief verbatim), what to change, and the target layout; the deck style is applied automatically.' +
       ' If the page needs images, image_search first and pass real URLs in image_urls.' +
-      ' If cloud generation fails, it is usually a local generation error (deepseek API failure or HTML conversion failure): do NOT loop retrying — make the concrete changes in place with execute_slide_script instead (or tell the user to try again in a few minutes).',
+      ' If cloud generation fails, it is usually a local generation error (kimi/deepseek API failure or HTML conversion failure): do NOT loop retrying — make the concrete changes in place with execute_slide_script instead (or tell the user to try again in a few minutes).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2182,7 +2183,7 @@ async function executeTool(
       if (!html)
         return fail(
           t('aiFailRegen'),
-          `Cloud page generation failed (2 attempts): ${lastErr}. This is usually a local generation error (deepseek API failure or HTML conversion failure) — do not keep calling regenerate_slide in a loop. Instead, make the requested changes in place with execute_slide_script / set_element_* (group children are editable too), or tell the user to retry in a few minutes. The page was not modified.`,
+          `Cloud page generation failed (2 attempts): ${lastErr}. This is usually a local generation error (kimi/deepseek API failure or HTML conversion failure) — do not keep calling regenerate_slide in a loop. Instead, make the requested changes in place with execute_slide_script / set_element_* (group children are editable too), or tell the user to retry in a few minutes. The page was not modified.`,
         )
       const r = await access.regenerateSlide(idx, html)
       if (!r.ok)
@@ -2219,11 +2220,11 @@ async function executeTool(
     case 'generate_deck': {
       // ── Self-driven pipeline:
       //   1) Plan: use pages if passed; with topic, the tool plans the outline via LLM (batched recursion over threshold) — fixes missing pages at the input side.
-      //   2) Generate: batched concurrent cloud page generation (local deepseek HTML generation, one retry per page), **each batch lands immediately → frontend shows pages one by one**.
+      //   2) Generate: batched concurrent cloud page generation (local kimi/deepseek HTML generation, one retry per page), **each batch lands immediately → frontend shows pages one by one**.
       if (!access.generatePageCloud || !(await access.isCloudPageGenEnabled?.().catch(() => false)))
         return fail(
           t('aiFailGenDeck'),
-          'Cloud slide generation is unavailable — configure a DeepSeek API key in ai-settings.json (or make sure GENOFFICE_CLOUD_SLIDE is not 0)',
+          'Cloud slide generation is unavailable — configure a Kimi or DeepSeek API key in ai-settings.json (or make sure GENOFFICE_CLOUD_SLIDE is not 0)',
         )
       if (!access.generateFromHtml)
         return fail(
@@ -2531,7 +2532,7 @@ async function executeTool(
       const deckName = String(pages[0]?.title ?? '').trim() || topic || coreHook
 
       // ── Step 2: generate page by page + land as we go (frontend shows pages one by one).
-      // The system generates each page's HTML locally (deepseek) and converts it to a
+      // The system generates each page's HTML locally (kimi, falling back to deepseek) and converts it to a
       // one-slide pptx; genOne returns the HTML string and landing feeds it to html-to-pptx.
       // Land strictly in page order: nextToLand pointer; a page lands only when its HTML is ready, keeping page order intact.
       const htmlByIndex: (string | null)[] = new Array(total).fill(null)

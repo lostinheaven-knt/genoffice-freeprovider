@@ -1489,7 +1489,7 @@ export function registerSlidesIpc(): void {
         })
       | { error: string }
     > => {
-      // Every page arrives as an HTML string (produced by slides:cloud-page-generate via deepseek);
+      // Every page arrives as an HTML string (produced by slides:cloud-page-generate via kimi/deepseek);
       // this handler converts each to a one-slide pptx via html2pptx and lands the bytes.
       // replace: assemble the whole batch into one multi-page pptx as the new deck base.
       // append: merge the "new pages" one by one into the existing deck via mergeSlideFromPptx
