@@ -1399,7 +1399,12 @@ export function registerSlidesIpc(): void {
       const height = op.height ?? 720
       const system = CLOUD_PAGE_SYSTEM_PROMPT(width, height)
       const user = buildCloudPageUserPrompt(op, width, height)
-      const maxTokens = 8192
+      // deepseek-v4-flash is a reasoning model: its thinking chain (reasoning_content)
+      // consumes max_tokens before content starts. With 8192 the chain alone could
+      // exhaust the budget and content came back empty (cloud-page-generate returned
+      // { ok:false, 'deepseek returned empty HTML' }). 100k leaves ample room for the
+      // thinking chain + the page HTML (verified accepted by the API).
+      const maxTokens = 100_000
 
       // Silence watchdog: abort the stream when no output/activity arrives for 180s
       // (mirrors the ai:stream ping keepalive; a long-but-active generation never trips it).
