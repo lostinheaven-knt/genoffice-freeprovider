@@ -106,13 +106,13 @@ export interface DeckAccess {
    * On search failure returns an empty array (fail-open; doesn't block the main generation path).
    */
   searchImages?(query: string, maxResults: number): Promise<string[]>
-  /** Whether cloud single-page generation is available (kill switch + gsk login state) */
+  /** Whether cloud single-page generation is available (kill switch + deepseek config in ai-settings.json) */
   isCloudPageGenEnabled?(): Promise<boolean>
   /**
-   * Cloud single-page generation (gsk slide_generate), used by generate_deck's self-driven
-   * pipeline: given the unified style + this page's brief/layout/images, the cloud service
-   * writes the HTML and converts it to a one-slide pptx. Returns a marker string that goes
-   * into a generateFromHtml pagesHtml slot.
+   * Cloud single-page generation, used by generate_deck's self-driven
+   * pipeline: given the unified style + this page's brief/layout/images, the system generates
+   * the HTML locally (deepseek) and converts it to a one-slide pptx. Returns an HTML string
+   * that goes into a generateFromHtml pagesHtml slot.
    */
   generatePageCloud?(args: {
     pageIndex: number
@@ -128,7 +128,7 @@ export interface DeckAccess {
     canvasW: number
     canvasH: number
     signal?: AbortSignal
-  }): Promise<{ ok: boolean; marker?: string; error?: string }>
+  }): Promise<{ ok: boolean; html?: string; error?: string }>
   /**
    * In-tool Style Skill generation:
    * a dedicated LLM call focused on producing a complete structured visual style guide
@@ -210,12 +210,12 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside GenOffice Slides (a
 
 ## Most important tool-selection principles (judge the scenario before acting)
 - **Creating a whole new deck (from scratch)** → first gather material (web_search) and images (image_search), then call **generate_deck**. With many pages, prefer **passing topic + approx_pages + context (the real material you found)** and let the system plan internally + generate page by page + display page by page (**you don't hand-write dozens of pages, and no pages get missed / arguments truncated**). For few pages where you already know each page, you may pass core_hook+style+pages directly.
-- **Adding 1 page or a few pages to an existing deck** → generate_deck(pages: briefs for just the new pages, insert_mode:"append"). Write each page's brief in detail (real content/data per region + layout); first look at the existing pages (get_deck_context) and pass a style description matching them so new pages stay consistent. **Even a single new page goes through this cloud generation; don't fall back to native tools and build a crude page**.
-- **Redoing / redesigning an existing page** (user says "redo this page / redesign it / try another layout / make it prettier") → **regenerate_slide**: first read_slide to get the page's original copy, then pass a detailed brief (copy the text/data to keep into the brief verbatim, state what to change and the target layout); the cloud service regenerates the page in place (other pages untouched). Don't dismantle and rebuild the whole page element by element with native tools.
+- **Adding 1 page or a few pages to an existing deck** → generate_deck(pages: briefs for just the new pages, insert_mode:"append"). Write each page's brief in detail (real content/data per region + layout); first look at the existing pages (get_deck_context) and pass a style description matching them so new pages stay consistent. **Even a single new page goes through this HTML generation pipeline; don't fall back to native tools and build a crude page**.
+- **Redoing / redesigning an existing page** (user says "redo this page / redesign it / try another layout / make it prettier") → **regenerate_slide**: first read_slide to get the page's original copy, then pass a detailed brief (copy the text/data to keep into the brief verbatim, state what to change and the target layout); the system regenerates the page in place (local HTML generation via deepseek + conversion to editable elements; other pages untouched). Don't dismantle and rebuild the whole page element by element with native tools.
 - **Deleting a page** → delete_slide(slideIndex).
 - **Modifying / fine-tuning existing elements** (position/size/alignment/distribution/relative nudges/text/style/fill/stroke, one or many elements) → always prefer **execute_slide_script** and do it in one script (see "Editing existing elements" below; read-write combined, no read_slide first). Don't blind-fire individual set_element_* calls. Add/delete elements with add_* / delete_element; redo a whole page with regenerate_slide.
 - **Elements inside a group**: direct children of a top-level group (marked "in group <id>" / els groupId) are edited exactly like normal elements — same script primitives and set_element_* tools, absolute coordinates. Only elements nested in a sub-group are read-only: call ungroup_element on the outer group first (ids on the page change afterwards; the result returns the fresh list). To delete a single group member, ungroup first too.
-- **Key constraint**: after cloud generation, do **not** use native tools to "polish/redo" a generated page — the output is the final good-looking result. Only when the user asks for a specific change should you edit the corresponding element with native tools; if they ask to redo the whole page, use regenerate_slide.
+- **Key constraint**: after the HTML generation pipeline produces a page, do **not** use native tools to "polish/redo" a generated page — the output is the final good-looking result. Only when the user asks for a specific change should you edit the corresponding element with native tools; if they ask to redo the whole page, use regenerate_slide.
 - **When the user attached files (see the "attachment list" in each turn's context)**: first read all text attachments with read_attachment (paginate long files); image attachments were already sent as images with the message, just look at them. Only **then** plan/generate the deck — content should come from the attachments first. When calling generate_deck, put the key content you read into the context argument; no need to web_search information the attachments already cover. **This is enforced: generate_deck refuses to run while any text attachment is still unread.**
 
 Rules:
@@ -249,11 +249,11 @@ Step 0 Questionnaire (mandatory when creating a whole new deck): first call ask_
 Step A Research: when the topic involves facts/attractions/data, run web_search 1–2 times first for real content. **Use real data and facts in the design; no "XX%" or placeholder names**.
 Step B Image strategy: with generate_deck you **don't need image_search in advance** — the system auto-searches internally per page from the planned image_queries keywords and fills real URLs back (each keyword searched once, deduped across pages). **Travel/product/people/brand decks get images by default without the user asking; never fake images with CSS placeholders — slots needing images must be filled with real ones**. Only when redoing a page via regenerate_slide or adding images to existing pages via insert_web_image do you image_search yourself first (English keywords describing a concrete scene like "summer palace kunming lake", not generic words like "park").
 Step C Unified style: first define one design system for the whole deck — primary/secondary colors, title and body font-size scale, content margins, card/corner style (e.g. "teal primary + cream background + sans-serif fresh look"). **Every page's HTML strictly follows the same system; style must be consistent across pages**.
-Step D Generate (call generate_deck): with many pages pass topic + approx_pages + context (feed in the real material from Step A) and let the system plan internally; with few pages you may pass core_hook+style+pages directly (image_queries takes English image-search keywords; **the system auto-searches internally and fills real URLs back**, no image_search needed in advance). The system writes HTML page by page and lands pages as they generate; you don't hand-write HTML.
+Step D Generate (call generate_deck): with many pages pass topic + approx_pages + context (feed in the real material from Step A) and let the system plan internally; with few pages you may pass core_hook+style+pages directly (image_queries takes English image-search keywords; **the system auto-searches internally and fills real URLs back**, no image_search needed in advance). The system generates HTML page by page (locally via deepseek), converts each to editable elements, and lands pages as they generate; you don't hand-write HTML.
 Step E Vary layouts per page (avoid sameness): 3 parallel points→three-column cards; a key number→big-number hero; comparison→two columns; sequence→timeline; image+text→left-text-right-image / full-image with text overlay. **Content pages of one deck must not all use the same layout**.
 
 - **generate_deck is the first choice for a whole new deck**: with many pages pass topic+approx_pages+context; the system plans internally (auto-batching over the threshold), **auto-searches images**, writes HTML page by page, and **lands pages onto the canvas as they generate (the user sees them one by one)**. **Neither "only page 1 got generated" nor "arguments were truncated" can happen — the page count is guaranteed by the system loop**.
-- **When adding just 1 page or a few pages (common case)**: also use generate_deck with **pages (briefs for only the new pages) + insert_mode:"append"** (appended at the end, existing pages untouched). **New pages also go through the cloud generation for polish — don't fall back to native tools for a crude page just because it's one page**. Before adding, read_slide/get_deck_context to see the existing pages' style (primary color/layout) and pass a matching style description; write each brief with the real content per region.
+- **When adding just 1 page or a few pages (common case)**: also use generate_deck with **pages (briefs for only the new pages) + insert_mode:"append"** (appended at the end, existing pages untouched). **New pages also go through the HTML generation pipeline for polish — don't fall back to native tools for a crude page just because it's one page**. Before adding, read_slide/get_deck_context to see the existing pages' style (primary color/layout) and pass a matching style description; write each brief with the real content per region.
 - Briefs should be concrete: what text/data/numbers go in each region, which image goes where, and the layout name — the cloud designer follows your brief; vague briefs produce generic pages.
 - After generation, if the user wants a tweak, edit the corresponding element with the native tools below; don't redo whole pages unprompted "to look better". Use regenerate_slide only when the user explicitly asks to redo a page.
 
@@ -653,12 +653,12 @@ const TOOLS: AgentToolDef[] = [
   {
     name: 'regenerate_slide',
     description:
-      '[Redo/redesign an existing page] The cloud service regenerates the page from your brief and replaces it in place (other pages untouched, undoable).' +
+      '[Redo/redesign an existing page] The system regenerates the page from your brief (local HTML generation via deepseek + conversion to editable elements) and replaces it in place (other pages untouched, undoable).' +
       ' Use when the user says "redo this page / redesign it / try another layout / make it prettier"; don\'t dismantle the page element by element with native tools.' +
       " Flow: first read_slide to get the page's current content, then check neighboring pages / get_deck_context to grasp the deck's style;" +
       ' write a detailed brief — what to keep (copy real text/data into the brief verbatim), what to change, and the target layout; the deck style is applied automatically.' +
       ' If the page needs images, image_search first and pass real URLs in image_urls.' +
-      ' If cloud generation fails, it is usually a temporary service error: do NOT loop retrying — make the concrete changes in place with execute_slide_script instead (or tell the user to try again in a few minutes).',
+      ' If cloud generation fails, it is usually a local generation error (deepseek API failure or HTML conversion failure): do NOT loop retrying — make the concrete changes in place with execute_slide_script instead (or tell the user to try again in a few minutes).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1453,7 +1453,7 @@ function blockScratchBuild(
   return {
     output:
       "For blank/from-scratch scenarios don't hand-assemble pages element by element with add_text_box/add_shape/add_smartart (crude layout). " +
-      'Use cloud generation instead: new whole deck → generate_deck; new pages for an existing deck → generate_deck(pages, insert_mode:"append"). ' +
+      'Use the HTML generation pipeline instead: new whole deck → generate_deck; new pages for an existing deck → generate_deck(pages, insert_mode:"append"). ' +
       'Write it beautifully in HTML/CSS and the system converts it into editable elements. Use native tools only when the deck already has polished content and one element needs refining.',
     isError: true,
     mutated: false,
@@ -2160,9 +2160,9 @@ async function executeTool(
         : []
       // Cloud generation, one retry then give up (same semantics as generate_deck pages)
       const backoff = access.retryBackoffMs ?? 2000
-      let marker: string | null = null
+      let html: string | null = null
       let lastErr = ''
-      for (let attempt = 0; attempt < 2 && !marker; attempt++) {
+      for (let attempt = 0; attempt < 2 && !html; attempt++) {
         if (attempt > 0 && backoff > 0) await new Promise((r) => setTimeout(r, backoff))
         const res = await access.generatePageCloud({
           pageIndex: idx + 1,
@@ -2176,15 +2176,15 @@ async function executeTool(
           canvasW: 1280,
           canvasH: 720,
         })
-        if (res.ok && res.marker) marker = res.marker
+        if (res.ok && res.html) html = res.html
         else lastErr = res.error ?? t('aiErrUnknown')
       }
-      if (!marker)
+      if (!html)
         return fail(
           t('aiFailRegen'),
-          `Cloud page generation failed (2 attempts): ${lastErr}. This is usually a temporary cloud service error — do not keep calling regenerate_slide in a loop. Instead, make the requested changes in place with execute_slide_script / set_element_* (group children are editable too), or tell the user to retry in a few minutes. The page was not modified.`,
+          `Cloud page generation failed (2 attempts): ${lastErr}. This is usually a local generation error (deepseek API failure or HTML conversion failure) — do not keep calling regenerate_slide in a loop. Instead, make the requested changes in place with execute_slide_script / set_element_* (group children are editable too), or tell the user to retry in a few minutes. The page was not modified.`,
         )
-      const r = await access.regenerateSlide(idx, marker)
+      const r = await access.regenerateSlide(idx, html)
       if (!r.ok)
         return fail(
           t('aiFailRegen'),
@@ -2219,11 +2219,11 @@ async function executeTool(
     case 'generate_deck': {
       // ── Self-driven pipeline:
       //   1) Plan: use pages if passed; with topic, the tool plans the outline via LLM (batched recursion over threshold) — fixes missing pages at the input side.
-      //   2) Generate: batched concurrent cloud page generation (gsk slide_generate, one retry per page), **each batch lands immediately → frontend shows pages one by one**.
+      //   2) Generate: batched concurrent cloud page generation (local deepseek HTML generation, one retry per page), **each batch lands immediately → frontend shows pages one by one**.
       if (!access.generatePageCloud || !(await access.isCloudPageGenEnabled?.().catch(() => false)))
         return fail(
           t('aiFailGenDeck'),
-          'Cloud slide generation is unavailable — sign in to Genspark (gsk) first',
+          'Cloud slide generation is unavailable — configure a DeepSeek API key in ai-settings.json (or make sure GENOFFICE_CLOUD_SLIDE is not 0)',
         )
       if (!access.generateFromHtml)
         return fail(
@@ -2531,9 +2531,9 @@ async function executeTool(
       const deckName = String(pages[0]?.title ?? '').trim() || topic || coreHook
 
       // ── Step 2: generate page by page + land as we go (frontend shows pages one by one).
-      // The cloud service (gsk slide_generate) writes each page's HTML and converts it to a
-      // one-slide pptx; genOne returns a marker and landing reads the bytes.
-      // Land strictly in page order: nextToLand pointer; a page lands only when its marker is ready, keeping page order intact.
+      // The system generates each page's HTML locally (deepseek) and converts it to a
+      // one-slide pptx; genOne returns the HTML string and landing feeds it to html-to-pptx.
+      // Land strictly in page order: nextToLand pointer; a page lands only when its HTML is ready, keeping page order intact.
       const htmlByIndex: (string | null)[] = new Array(total).fill(null)
       // Per-page completion flags (aligned with pages; same reference as state.pageDone, used by buildContext progress injection)
       const doneFlags: boolean[] = state?.pageDone ?? new Array(total).fill(false)
@@ -2606,9 +2606,9 @@ async function executeTool(
             canvasH,
             ...(signal ? { signal } : {}),
           })
-          if (res.ok && res.marker) {
+          if (res.ok && res.html) {
             pageErrors[pageIndex - 1] = undefined
-            return res.marker
+            return res.html
           }
           lastErr = res.error ?? t('aiErrUnknown')
         }

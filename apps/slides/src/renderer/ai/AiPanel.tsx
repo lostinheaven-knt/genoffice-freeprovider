@@ -848,8 +848,8 @@ export function AiPanel({
           return false
         }
       },
-      // Cloud single-page generation (gsk slide_generate): the cloud service owns HTML writing +
-      // pptx conversion; the deck-level style/outline stay local.
+      // Cloud single-page generation: the system generates HTML locally (deepseek) and converts
+      // it to a single page via html2pptx; the deck-level style/outline stay local.
       generatePageCloud: async (args) => {
         try {
           const briefParts = [args.brief]
